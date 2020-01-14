@@ -1,44 +1,16 @@
-#include <dlaf/communication/communicator.h>
-#include <dlaf/matrix.h>
-#include <dlaf/mpi_header.h>
+#include <gemm.hpp>
+#include <mpi_utils.hpp>
 
-#include <mpi.h>
-#include <blas.hh>
-#include <boost/program_options.hpp>
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
-#include <hpx/hpx_start.hpp>
-//#include <hpx/runtime/threads/run_as_hpx_thread.hpp>
+#include <hpx/program_options.hpp>
+
+#include <mpi.h>
 
 #include <complex>
 #include <cstdio>
 #include <iostream>
 #include <vector>
-
-// Map between C++ and MPI types.
-//
-template <typename scalar>
-MPI_Datatype get_mpi_type();
-
-template <>
-MPI_Datatype get_mpi_type<float>() {
-  return MPI_FLOAT;
-};
-
-template <>
-MPI_Datatype get_mpi_type<double>() {
-  return MPI_DOUBLE;
-};
-
-template <>
-MPI_Datatype get_mpi_type<std::complex<float>>() {
-  return MPI_CXX_FLOAT_COMPLEX;
-};
-
-template <>
-MPI_Datatype get_mpi_type<std::complex<double>>() {
-  return MPI_CXX_DOUBLE_COMPLEX;
-};
 
 // A struct representing a 2D-region.
 //
@@ -48,27 +20,20 @@ struct span2d {
 
   // Column-major index
   //
-  int idx(int i, int j) const noexcept {
-    return i + j * rows;
-  }
+  int idx(int i, int j) const noexcept { return i + j * rows; }
 
   std::pair<int, int> coords(int index) const noexcept {
     return {index % rows, index / rows};
   }
 
-  int size() const noexcept {
-    return rows * cols;
-  }
+  int size() const noexcept { return rows * cols; }
 
-  int ld() const noexcept {
-    return rows;
-  }
+  int ld() const noexcept { return rows; }
 
   // Iterates in column major order.
   // f : (i, j) -> void
   //
-  template <typename Func>
-  void loop(Func f) const noexcept {
+  template <typename Func> void loop(Func f) const noexcept {
     for (int j = 0; j < cols; ++j) {
       for (int i = 0; i < rows; ++i) {
         f(i, j);
@@ -79,8 +44,7 @@ struct span2d {
   // Iterates in column major order.
   // f : (this_index, other_index) -> void
   //
-  template <typename Func>
-  void loop(span2d other, Func f) const noexcept {
+  template <typename Func> void loop(span2d other, Func f) const noexcept {
     for (int j = 0; j < cols; ++j) {
       for (int i = 0; i < rows; ++i) {
         f(idx(i, j), other.idx(i, j));
@@ -89,16 +53,16 @@ struct span2d {
   }
 };
 
-// Returns the coordinate of the process holding `index` in 2D block-cyclic distribution.
+// Returns the coordinate of the process holding `index` in 2D block-cyclic
+// distribution.
 //
-int find_pcoord(int index, int blk, int nproc) {
-  return (index / blk) % nproc;
-}
+int find_pcoord(int index, int blk, int nproc) { return (index / blk) % nproc; }
 
 // Interleaves splits from blocks and tiles.
 //
 template <typename Predicate, typename Transform>
-std::vector<int> splits(int len, int blk, int tile, Predicate filter_f, Transform transf_f) {
+std::vector<int> splits(int len, int blk, int tile, Predicate filter_f,
+                        Transform transf_f) {
   int num_blocks = (len + blk - 1) / blk;
   int num_tiles = (len + tile - 1) / tile;
 
@@ -125,8 +89,8 @@ std::vector<int> splits(int len, int blk, int tile, Predicate filter_f, Transfor
 }
 
 std::vector<int> splits(int len, int blk, int tile) {
-  auto filter_f = [](int) { return true; };  // no filter
-  auto transf_f = [](int x) { return x; };   // identity
+  auto filter_f = [](int) { return true; }; // no filter
+  auto transf_f = [](int x) { return x; };  // identity
   return splits(len, blk, tile, filter_f, transf_f);
 }
 
@@ -134,29 +98,34 @@ std::vector<int> splits(int len, int blk, int tile) {
 // pcoord - the coordinate of the process along the dimension
 //
 std::vector<int> splits(int len, int blk, int tile, int nproc, int pcoord) {
-  auto filter_f = [blk, nproc, pcoord](int delim) { return find_pcoord(delim, blk, nproc) == pcoord; };
+  auto filter_f = [blk, nproc, pcoord](int delim) {
+    return find_pcoord(delim, blk, nproc) == pcoord;
+  };
   auto transf_f = [blk, nproc](int delim) {
-    int b_idx = (delim / blk) / nproc;  // index of the block
-    int el_idx = delim % blk;           // index within the block
+    int b_idx = (delim / blk) / nproc; // index of the block
+    int el_idx = delim % blk;          // index within the block
     return b_idx * blk + el_idx;
   };
   return splits(len, blk, tile, filter_f, transf_f);
 }
 
 template <typename scalar>
-void tile_gemm(int tile_m, int tile_n, int tile_k, scalar const* a_buffer, int lda,
-               scalar const* b_buffer, int ldb, scalar* c_buffer, int ldc) {
+void tile_gemm(int tile_m, int tile_n, int tile_k, scalar const *a_buffer,
+               int lda, scalar const *b_buffer, int ldb, scalar *c_buffer,
+               int ldc) {
   constexpr scalar alpha = 1;
   constexpr scalar beta = 1;
-  blas::gemm(blas::Layout::ColMajor, blas::Op::ConjTrans, blas::Op::NoTrans, tile_m, tile_n, tile_k,
-             alpha, a_buffer, lda, b_buffer, ldb, beta, c_buffer, ldc);
+  tsgemm::gemm(tile_m, tile_n, tile_k, alpha, a_buffer, lda, b_buffer, ldb,
+               beta, c_buffer, ldc);
 }
 
-// For each `rank`, assigns a tag equal to the number of previous occurences within the `ranks_map`. This
-// ensures that each message sent from `this` process to the `rank` has a unique tag. `ranks_map` and
-// `c_pieces` are ordered in column-major, the order of tags within slabs follow that ordering.
+// For each `rank`, assigns a tag equal to the number of previous occurences
+// within the `ranks_map`. This ensures that each message sent from `this`
+// process to the `rank` has a unique tag. `ranks_map` and `c_pieces` are
+// ordered in column-major, the order of tags within slabs follow that ordering.
 //
-std::vector<int> init_tags_map(int num_procs, std::vector<int> const& ranks_map) {
+std::vector<int> init_tags_map(int num_procs,
+                               std::vector<int> const &ranks_map) {
   std::vector<int> tags_map(ranks_map.size());
   for (int r = 0; r < num_procs; ++r) {
     int tag = 0;
@@ -171,8 +140,9 @@ std::vector<int> init_tags_map(int num_procs, std::vector<int> const& ranks_map)
   return tags_map;
 }
 
-std::vector<int> init_ranks_map(std::vector<int> const& c_split_r, std::vector<int> const& c_split_c,
-                                int p_r, int p_c, int bs_r, int bs_c) {
+std::vector<int> init_ranks_map(std::vector<int> const &c_split_r,
+                                std::vector<int> const &c_split_c, int p_r,
+                                int p_c, int bs_r, int bs_c) {
   int num_c_seg_r = static_cast<int>(c_split_r.size()) - 1;
   int num_c_seg_c = static_cast<int>(c_split_c.size()) - 1;
   int num_c_pieces = num_c_seg_r * num_c_seg_c;
@@ -208,47 +178,25 @@ std::vector<int> init_ranks_map(std::vector<int> const& c_split_r, std::vector<i
 //
 // Example usage:
 //
-//     mpirun -np 1 tsgemm --mnk 100 100 10000 --tile_mnk 64 64 64 --proc_grid 1 1 --blk_dims 32 32
+//     mpirun -np 1 tsgemm --mnk 100 100 10000 --tile_mnk 64 64 64 --proc_grid 1
+//     1 --blk_dims 32 32
 //
-int tsgemm_main(int argc, char** argv) {
+int tsgemm_main(hpx::program_options::variables_map &vm) {
   using scalar_t = std::complex<double>;
   using hpx::dataflow;
-  using hpx::util::unwrapping;
   using hpx::future;
-  namespace po = boost::program_options;
+  using hpx::util::unwrapping;
 
-  // Input
-  //
-  po::options_description desc("Allowed options.");
-
-  // clang-format off
-  desc.add_options()
-    ("mnk",       po::value<std::vector<int>>() ->multitoken(), "mnk")
-    ("tile_mnk",  po::value<std::vector<int>>() ->multitoken(), "Tile mnk dimensions.")
-    ("proc_grid", po::value<std::vector<int>>() ->multitoken(), "Process grid")
-    ("blk_dims",  po::value<std::vector<int>>() ->multitoken(), "Block sizes.")
-  ;
-  // clang-format on
-
-  po::variables_map vm;
-  po::store(po::parse_command_line(argc, argv, desc), vm);
-  po::notify(vm);
-
-  std::vector<int> mnk = vm["mnk"].as<std::vector<int>>();
-  std::vector<int> tile_mnk = vm["tile_mnk"].as<std::vector<int>>();
-  std::vector<int> proc_grid = vm["proc_grid"].as<std::vector<int>>();
-  std::vector<int> blk_dims = vm["blk_dims"].as<std::vector<int>>();
-
-  int m = mnk[0];
-  int n = mnk[1];
-  int k = mnk[2];
-  int tile_m = tile_mnk[0];
-  int tile_n = tile_mnk[1];
-  int tile_k = tile_mnk[2];
-  int p_r = proc_grid[0];
-  int p_c = proc_grid[1];
-  int bs_r = blk_dims[0];
-  int bs_c = blk_dims[1];
+  int m = vm["len_m"].as<int>();
+  int n = vm["len_n"].as<int>();
+  int k = vm["len_k"].as<int>();
+  int tile_m = vm["tile_m"].as<int>();
+  int tile_n = vm["tile_n"].as<int>();
+  int tile_k = vm["tile_k"].as<int>();
+  int p_r = vm["pgrid_rows"].as<int>();
+  int p_c = vm["pgrid_cols"].as<int>();
+  int bs_r = vm["blk_rows"].as<int>();
+  int bs_c = vm["blk_cols"].as<int>();
 
   for (int input : {m, n, k, p_r, p_c, bs_r, bs_c, tile_m, tile_n, tile_k}) {
     if (input <= 0) {
@@ -267,7 +215,8 @@ int tsgemm_main(int argc, char** argv) {
   int num_procs;
   MPI_Comm_size(comm_world, &num_procs);
   if (num_procs != p) {
-    std::cout << "[ERROR] The number of processes doesn't match the process grid!";
+    std::cout
+        << "[ERROR] The number of processes doesn't match the process grid!";
     exit(0);
   }
 
@@ -287,14 +236,16 @@ int tsgemm_main(int argc, char** argv) {
   MPI_Comm_rank(comm_cart, &r);
   MPI_Cart_coords(comm_cart, r, ndims, pcoords);
 
-  // Local distribution of A and B. Only the `k` dimension is split. In SIRIUS, `k_loc` is approximately
-  // equally distributed. `k_loc` coincides with `lld` for `A` and `B`. If there is a remainder,
-  // distributed it across ranks starting from the `0`-th.
+  // Local distribution of A and B. Only the `k` dimension is split. In SIRIUS,
+  // `k_loc` is approximately equally distributed. `k_loc` coincides with `lld`
+  // for `A` and `B`. If there is a remainder, distributed it across ranks
+  // starting from the `0`-th.
   //
   int k_rem = k % p;
   int k_loc = k / p + ((r < k_rem) ? 1 : 0);
 
-  // Delimiters descibing how C is split locally and globally along columns and rows.
+  // Delimiters descibing how C is split locally and globally along columns and
+  // rows.
   //
   std::vector<int> c_split_r = splits(m, bs_r, tile_m);
   std::vector<int> c_split_c = splits(n, bs_c, tile_n);
@@ -352,14 +303,15 @@ int tsgemm_main(int argc, char** argv) {
         int b_offset = b_ts.idx(k * tile_k, j * tile_n);
         int c_offset = c_ini.idx(i * tile_m, j * tile_n);
 
-        scalar_t const* a_ptr = a_buffer.data() + a_offset;
-        scalar_t const* b_ptr = b_buffer.data() + b_offset;
-        scalar_t* c_ptr = c_ini_buffer.data() + c_offset;
+        scalar_t const *a_ptr = a_buffer.data() + a_offset;
+        scalar_t const *b_ptr = b_buffer.data() + b_offset;
+        scalar_t *c_ptr = c_ini_buffer.data() + c_offset;
 
         int c_tiles_idx = i + j * tgrid_m;
         c_ini_futures[c_tiles_idx] =
-            dataflow(unwrapping(tile_gemm<scalar_t>), len_m, len_n, len_k, a_ptr, a_ts.ld(), b_ptr,
-                     b_ts.ld(), c_ptr, c_ini.ld(), std::move(c_ini_futures[c_tiles_idx]));
+            dataflow(unwrapping(tile_gemm<scalar_t>), len_m, len_n, len_k,
+                     a_ptr, a_ts.ld(), b_ptr, b_ts.ld(), c_ptr, c_ini.ld(),
+                     std::move(c_ini_futures[c_tiles_idx]));
       }
     }
   }
@@ -371,20 +323,24 @@ int tsgemm_main(int argc, char** argv) {
 
   // Ranks and tags maps for each piece.
   //
-  std::vector<int> ranks_map = init_ranks_map(c_split_r, c_split_r, p_r, p_c, bs_r, bs_c);
+  std::vector<int> ranks_map =
+      init_ranks_map(c_split_r, c_split_r, p_r, p_c, bs_r, bs_c);
   std::vector<int> tags_map = init_tags_map(p, ranks_map);
-  span2d pieces_grid{static_cast<int>(c_split_r.size()) - 1, static_cast<int>(c_split_c.size()) - 1};
+  span2d pieces_grid{static_cast<int>(c_split_r.size()) - 1,
+                     static_cast<int>(c_split_c.size()) - 1};
 
   // Allocate send buffers.
   //
   std::vector<scalar_t> snd_buffer(c_ini.size());
   std::vector<MPI_Request> snd_reqs(pieces_grid.size());
 
-  // For each piece at (i, j) of C_ini stored locally issue a send to the process it belongs in C_fin.
+  // For each piece at (i, j) of C_ini stored locally issue a send to the
+  // process it belongs in C_fin.
   //
   int snd_offset = 0;
-  auto send_f = [&c_split_c, &c_split_r, &c_ini_buffer, &c_ini, &snd_buffer, &snd_offset, &pieces_grid,
-                 &ranks_map, &snd_reqs, &tags_map, &comm_cart](int i, int j) {
+  auto send_f = [&c_split_c, &c_split_r, &c_ini_buffer, &c_ini, &snd_buffer,
+                 &snd_offset, &pieces_grid, &ranks_map, &snd_reqs, &tags_map,
+                 &comm_cart](int i, int j) {
     int begin_c = c_split_c[j];
     int begin_r = c_split_r[i];
 
@@ -393,8 +349,8 @@ int tsgemm_main(int argc, char** argv) {
     int nelems = piece.size();
     int c_ini_offset = c_ini.idx(begin_r, begin_c);
 
-    scalar_t const* c_ptr = c_ini_buffer.data() + c_ini_offset;
-    scalar_t* snd_ptr = snd_buffer.data() + snd_offset;
+    scalar_t const *c_ptr = c_ini_buffer.data() + c_ini_offset;
+    scalar_t *snd_ptr = snd_buffer.data() + snd_offset;
 
     piece.loop(c_ini, [c_ptr, snd_ptr](int piece_idx, int c_ini_idx) {
       snd_ptr[piece_idx] = c_ptr[c_ini_idx];
@@ -402,9 +358,10 @@ int tsgemm_main(int argc, char** argv) {
 
     int piece_idx = pieces_grid.idx(i, j);
     int dest_rank = ranks_map[piece_idx];
-    auto& snd_req = snd_reqs[piece_idx];
+    auto &snd_req = snd_reqs[piece_idx];
     int tag = tags_map[piece_idx];
-    MPI_CALL(MPI_Issend(snd_ptr, nelems, get_mpi_type<scalar_t>(), dest_rank, tag, comm_cart, &snd_req))
+    MPI_Issend(snd_ptr, nelems, tsgemm::get_mpi_type<scalar_t>(), dest_rank,
+               tag, comm_cart, &snd_req);
 
     snd_offset += nelems;
   };
@@ -427,16 +384,19 @@ int tsgemm_main(int argc, char** argv) {
   //
   int rcv_offset = 0;
   int rcv_req_idx = 0;
-  auto recv_f = [p, &rcv_offset, &rcv_req_idx, &slab_split_r, &slab_split_c, &slabs_grid, &rcv_buffer,
-                 &rcv_reqs, &comm_cart](int i, int j) {
-    int nelems = (slab_split_c[j + 1] - slab_split_c[j]) * (slab_split_r[i + 1] - slab_split_r[i]);
+  auto recv_f = [p, &rcv_offset, &rcv_req_idx, &slab_split_r, &slab_split_c,
+                 &slabs_grid, &rcv_buffer, &rcv_reqs,
+                 &comm_cart](int i, int j) {
+    int nelems = (slab_split_c[j + 1] - slab_split_c[j]) *
+                 (slab_split_r[i + 1] - slab_split_r[i]);
     int tag = slabs_grid.idx(i, j);
 
     for (int src_rank = 0; src_rank < p; ++src_rank) {
-      scalar_t* rcv_ptr = rcv_buffer.data() + rcv_offset;
-      auto& rcv_req = rcv_reqs[rcv_req_idx];
+      scalar_t *rcv_ptr = rcv_buffer.data() + rcv_offset;
+      auto &rcv_req = rcv_reqs[rcv_req_idx];
 
-      MPI_CALL(MPI_Irecv(rcv_ptr, nelems, get_mpi_type<scalar_t>(), src_rank, tag, comm_cart, &rcv_req))
+      MPI_Irecv(rcv_ptr, nelems, tsgemm::get_mpi_type<scalar_t>(), src_rank,
+                tag, comm_cart, &rcv_req);
 
       rcv_offset += nelems;
       ++rcv_req_idx;
@@ -448,20 +408,22 @@ int tsgemm_main(int argc, char** argv) {
 
   // Wait for all data to be received.
   //
-  MPI_Waitall(static_cast<int>(rcv_reqs.size()), rcv_reqs.data(), MPI_STATUS_IGNORE);
+  MPI_Waitall(static_cast<int>(rcv_reqs.size()), rcv_reqs.data(),
+              MPI_STATUS_IGNORE);
 
   // For each piece at (i, j) assemble received data from all processes.
   //
   rcv_offset = 0;
-  auto assemble_f = [p, bs_r, bs_c, &c_fin, &c_fin_buffer, &rcv_buffer, &slab_split_c, &slab_split_r,
-                     &rcv_offset](int i, int j) {
-    span2d piece{slab_split_r[i + 1] - slab_split_r[i], slab_split_c[j + 1] - slab_split_c[j]};
+  auto assemble_f = [p, bs_r, bs_c, &c_fin, &c_fin_buffer, &rcv_buffer,
+                     &slab_split_c, &slab_split_r, &rcv_offset](int i, int j) {
+    span2d piece{slab_split_r[i + 1] - slab_split_r[i],
+                 slab_split_c[j + 1] - slab_split_c[j]};
 
     int offset_c = c_fin.idx(i * bs_r, j * bs_c);
-    scalar_t* c_ptr = c_fin_buffer.data() + offset_c;
+    scalar_t *c_ptr = c_fin_buffer.data() + offset_c;
 
     for (int src_rank = 0; src_rank < p; ++src_rank) {
-      scalar_t const* rcv_ptr = rcv_buffer.data() + rcv_offset;
+      scalar_t const *rcv_ptr = rcv_buffer.data() + rcv_offset;
 
       piece.loop(c_fin, [c_ptr, rcv_ptr](int piece_idx, int c_fin_idx) {
         c_ptr[c_fin_idx] += rcv_ptr[piece_idx];
@@ -474,37 +436,34 @@ int tsgemm_main(int argc, char** argv) {
 
   // Wait until all data is sent
   //
-  MPI_Waitall(static_cast<int>(snd_reqs.size()), snd_reqs.data(), MPI_STATUS_IGNORE);
+  MPI_Waitall(static_cast<int>(snd_reqs.size()), snd_reqs.data(),
+              MPI_STATUS_IGNORE);
 
   return hpx::finalize();
 }
 
-int main(int argc, char** argv) {
-  // Initialize MPI
-  //
-  int threading_required = MPI_THREAD_SERIALIZED;
-  int threading_provided;
-  MPI_Init_thread(&argc, &argv, threading_required, &threading_provided);
+int main(int argc, char **argv) {
+  auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_SERIALIZED}; // MPI
 
-  if (threading_provided != threading_required) {
-    std::fprintf(stderr, "Provided MPI threading model does not match the required one.\n");
-    MPI_Abort(MPI_COMM_WORLD, 1);
-  }
+  // Input
+  // note: has to be in main so that hpx knows about the various options
+  namespace po = hpx::program_options;
+  po::options_description desc("Allowed options.");
 
-  // Initialize HPX
-  //
-  hpx::start(nullptr, argc, argv);
-  hpx::runtime* rt = hpx::get_runtime_ptr();
-  hpx::util::yield_while([rt]() { return rt->get_state() < hpx::state_running; });
+  // clang-format off
+    desc.add_options()
+       ("len_m",      po::value<int>()->default_value( 100), "m dimension")
+       ("len_n",      po::value<int>()->default_value( 100), "n dimension")
+       ("len_k",      po::value<int>()->default_value(1000), "k dimension")
+       ("tile_m",     po::value<int>()->default_value(  64), "tile m dimension")
+       ("tile_n",     po::value<int>()->default_value(  64), "tile n dimension")
+       ("tile_k",     po::value<int>()->default_value(  64), "tile k dimension")
+       ("pgrid_rows", po::value<int>()->default_value(   1), "process grid rows")
+       ("pgrid_cols", po::value<int>()->default_value(   1), "process grid columns")
+       ("blk_rows",   po::value<int>()->default_value(  32), "block rows")
+       ("blk_cols",   po::value<int>()->default_value(  32), "block columns")
+    ;
+  // clang-format on
 
-  // Run tsgemm
-  //
-  auto ret = hpx::run_as_hpx_thread(&tsgemm_main, argc, argv);
-
-  // Stop HPX & MPI
-  //
-  hpx::stop();
-  MPI_Finalize();
-
-  return ret;
+  return hpx::init(tsgemm_main, desc, argc, argv); // HPX
 }

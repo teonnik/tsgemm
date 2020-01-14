@@ -7,14 +7,13 @@ find_package(MPI REQUIRED)
 find_package(HPX REQUIRED)
 find_package(MKL REQUIRED COMPONENTS BLAS_32BIT_OMP)
 
-#add_executable(v1 v1.cpp) 
-#target_link_libraries(v1 PRIVATE ${deps})
-#
-#add_executable(v2 v2.cpp)
-#target_link_libraries(v2 PRIVATE ${deps})
+function(add_tsgemm_target name)
+    add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE MPI::MPI_CXX mkl::blas_32bit_omp hpx)
+    target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR})
+    target_compile_features(${name} PRIVATE cxx_std_14)
+endfunction()
 
-add_executable(v3 v3.cpp)
-target_link_libraries(v3 PRIVATE MPI::MPI_CXX mkl::blas_32bit_omp hpx)
-target_include_directories(v3 PRIVATE ${PROJECT_SOURCE_DIR})
-target_compile_features(v3 PRIVATE cxx_std_14)
-
+add_tsgemm_target(v1)
+add_tsgemm_target(v2)
+add_tsgemm_target(v3)

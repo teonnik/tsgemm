@@ -19,7 +19,7 @@ struct seg_dim {
 
   // Returns the length of the segment at `seg_index`.
   int seg_len(int seg_idx) const noexcept {
-    return el_index(seg_idx + 1) - std::min(el_index(seg_idx), len);
+    return std::min(el_index(seg_idx + 1), len) - el_index(seg_idx);
   }
 
   // Returns the number of segments.
@@ -64,20 +64,15 @@ struct c_dim {
   int slab_len() const noexcept {
     seg_dim blk_dim = seg_dim{len, blk};
     seg_dim proc_dim = seg_dim{blk_dim.num_seg(), nproc};
-
     int slab = proc_dim.num_seg() * blk;
-
     int rem_pcoords = proc_dim.rem_seg();
     int rem_len = blk_dim.rem_seg();
-
-    bool last_pcoord =
-        (rem_pcoords == 0) ? pcoord == nproc - 1 : rem_pcoords == pcoord;
-    bool missing_pcoord_in_reminder = rem_pcoords != 0 && pcoord > rem_pcoords;
+    bool last_pcoord = pcoord == ((rem_pcoords == 0) ? nproc : rem_pcoords) - 1;
+    bool missing_pcoord_in_rem = rem_pcoords != 0 && pcoord > rem_pcoords - 1;
 
     if (last_pcoord && rem_len != 0)
       return slab - blk + rem_len;
-
-    if (missing_pcoord_in_reminder)
+    if (missing_pcoord_in_rem)
       return slab - blk;
 
     return slab;
@@ -242,8 +237,6 @@ void schedule_offload_and_send(
     int pcoord_c = cols_dim.el_pcoord(pcol);
     int dest_rank = tsgemm::get_proc_rank(comm_cart, pcoord_r, pcoord_c);
     int &tag = tags[dest_rank];
-    printf("%d %d %d %d %d %d %d\n", tidx, prow, pcol, prlen, pclen, dest_rank,
-           tag);
 
     // capture by value to avoid segfault due to lifetime issues
     auto mpi_launcher = [=](auto &&) {
@@ -261,15 +254,12 @@ void schedule_offload_and_send(
 }
 
 template <typename scalar>
-void schedule_blk_load(int num_procs, int ini_rcv_offset,
-                       scalar const *ini_recv_ptr, int prlen, int pclen,
-                       int rcv_ld, scalar *cfin_ptr, int cfin_ld) {
+void schedule_blk_load(int num_procs, scalar const *recv_ptr, int prlen,
+                       int pclen, int rcv_ld, scalar *cfin_ptr, int cfin_ld) {
   int num_elems = prlen * pclen;
-  int rcv_offset = ini_rcv_offset;
   for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
-    scalar const *rcv_ptr = ini_recv_ptr + rcv_offset;
-    accumulate<scalar, 1>(prlen, pclen, rcv_ptr, rcv_ld, cfin_ptr, cfin_ld);
-    rcv_offset += num_elems;
+    accumulate<scalar, 1>(prlen, pclen, recv_ptr + src_rank * num_elems, rcv_ld,
+                          cfin_ptr, cfin_ld);
   }
 }
 
@@ -292,25 +282,24 @@ void schedule_recv_and_load(
   std::vector<hpx::future<void>> recv_futures;
   recv_futures.reserve(num_procs);
   auto recv_and_load_f = [&](int prow, int pcol, int prlen, int pclen) {
-    int rcv_ld = prlen;
+    int recv_ld = prlen;
     int num_elems = prlen * pclen;
     int cfin_offset = index_map(prow, pcol, cfin_ld);
     scalar *cfin_ptr = cfin_buffer.data() + cfin_offset;
+    scalar *recv_ptr = recv_buffer.data() + rcv_offset;
 
-    int loc_rcv_offset = rcv_offset;
+    recv_futures.clear();
     for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
-      scalar *rcv_ptr = recv_buffer.data() + loc_rcv_offset;
-      auto mpi_fut = hpx::mpi::async(MPI_Irecv, rcv_ptr, num_elems,
-                                     tsgemm::get_mpi_type<scalar>(), src_rank,
-                                     tag, comm_cart);
+      auto mpi_fut = hpx::mpi::async(MPI_Irecv, recv_ptr + src_rank * num_elems,
+                                     num_elems, tsgemm::get_mpi_type<scalar>(),
+                                     src_rank, tag, comm_cart);
       recv_futures.push_back(std::move(mpi_fut));
-      // printf("%d %d %d %d %d %d\n", prow, pcol, prlen, pclen, src_rank, tag);
-      loc_rcv_offset += num_elems;
     }
 
-    // TODO: should be by value
-
-    auto load_fut = hpx::when_all(recv_futures, load_func);
+    auto load_fut = hpx::dataflow(
+        hpx::util::unwrapping(schedule_blk_load<scalar>), num_procs, recv_ptr,
+        prlen, pclen, recv_ld, cfin_ptr, cfin_ld, recv_futures);
+    comm_futures.push_back(std::move(load_fut));
 
     rcv_offset += num_procs * num_elems;
     ++tag;
@@ -323,7 +312,7 @@ void schedule_recv_and_load(
 // ****************************************************************************************
 
 template <typename scalar>
-void print_cfin_sum(MPI_Comm comm_cart, std::vector<scalar> const &buffer) {
+void print_buffer_sum(MPI_Comm comm_cart, std::vector<scalar> const &buffer) {
   scalar local_sum = 0;
   for (auto el : buffer) {
     local_sum += el;
@@ -404,10 +393,6 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   c_dim m_dim{len_m, blk_rows, tile_m, pgrid_rows, pcoords[0]};
   c_dim n_dim{len_n, blk_cols, tile_n, pgrid_cols, pcoords[1]};
 
-  // Delimiters descibing how C is split locally and globally along columns and
-  // rows.
-  //
-
   // Data for A, B:
   //
   // - all buffers are stored in column-major layout
@@ -437,13 +422,13 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   comm_futures.reserve(4 * len_m * len_n / (seg_m * seg_n));
 
   // Tell the scheduler that we want to handle mpi in the background
-  // here we use the provided hpx::mpi::poll function but a user
-  // provided function or lambda may be supplied
+  // and use the provided hpx::mpi::poll function
   //
   auto const sched = hpx::threads::get_self_id_data()->get_scheduler_base();
   sched->set_user_polling_function(&hpx::mpi::poll);
   sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
 
+  // 0. Reset buffers
   // 1. Schedule multiply
   // 3. Schedule offloads and receives after multiply
   // 2. Schedule sends and loads
@@ -451,6 +436,12 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   //
   constexpr int num_iters = 0;
   for (int i = 0; i <= num_iters; ++i) {
+
+    gemm_futures.clear();
+    comm_futures.clear();
+    std::fill(std::begin(cini_buffer), std::end(cini_buffer), scalar_t{0});
+    std::fill(std::begin(cfin_buffer), std::end(cfin_buffer), scalar_t{0});
+
     auto t0_tot = clock_t::now();
 
     auto t0_gemm = clock_t::now();
@@ -474,24 +465,25 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
 
     auto t1_tot = clock_t::now();
 
+    // clang-format off
     if (rank == 0 && i != 0) {
-      printf("\n ---- Results ---- \n");
-      printf("t_tot  [s] = %.5f\n", seconds_t(t1_tot - t0_tot).count());
-      printf("t_gemm [s] = %.5f\n", seconds_t(t1_gemm - t0_gemm).count());
-      printf("t_recv [s] = %.5f\n", seconds_t(t1_recv - t0_recv).count());
-      printf("t_send [s] = %.5f\n", seconds_t(t1_send - t0_send).count());
-      printf("t_wait [s] = %.5f\n", seconds_t(t1_wait - t0_wait).count());
+      printf("%d: t_tot  [s] = %.5f\n", i, seconds_t(t1_tot - t0_tot).count());
+      printf("%d: t_gemm [s] = %.5f\n", i, seconds_t(t1_gemm - t0_gemm).count());
+      printf("%d: t_recv [s] = %.5f\n", i, seconds_t(t1_recv - t0_recv).count());
+      printf("%d: t_send [s] = %.5f\n", i, seconds_t(t1_send - t0_send).count());
+      printf("%d: t_wait [s] = %.5f\n", i, seconds_t(t1_wait - t0_wait).count());
     }
+    // clang-format on
   }
 
   // Before exiting, shut down the mpi/user polling loop.
   sched->remove_scheduler_mode(hpx::threads::policies::enable_user_polling);
 
   // Simple check
-  print_cfin_sum(comm_cart, cini_buffer);
-  print_cfin_sum(comm_cart, send_buffer);
-  print_cfin_sum(comm_cart, recv_buffer);
-  print_cfin_sum(comm_cart, cfin_buffer);
+  //  print_buffer_sum(comm_cart, cini_buffer);
+  //  print_buffer_sum(comm_cart, send_buffer);
+  //  print_buffer_sum(comm_cart, recv_buffer);
+  //  print_buffer_sum(comm_cart, cfin_buffer);
 
   return hpx::finalize();
 }

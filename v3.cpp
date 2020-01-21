@@ -1,5 +1,6 @@
 #include <gemm.hpp>
 #include <mpi_utils.hpp>
+#include <mpi_future.hpp>
 
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
@@ -434,7 +435,7 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   // 2. Schedule sends and loads
   // 4. Wait for all
   //
-  constexpr int num_iters = 0;
+  constexpr int num_iters = 5;
   for (int i = 0; i <= num_iters; ++i) {
 
     gemm_futures.clear();

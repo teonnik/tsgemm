@@ -1,9 +1,9 @@
-#include <accumulate.hpp>
-#include <gemm.hpp>
-#include <geometry.hpp>
-#include <input.hpp>
-#include <mpi_utils.hpp>
-#include <sum_global.hpp>
+#include <tsgemm/accumulate.hpp>
+#include <tsgemm/gemm.hpp>
+#include <tsgemm/geometry.hpp>
+#include <tsgemm/input.hpp>
+#include <tsgemm/mpi_utils.hpp>
+#include <tsgemm/sum_global.hpp>
 
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
@@ -350,7 +350,7 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
     // 2. Schedule sends and loads
     // 4. Wait for all
     //
-    constexpr int num_iters = 2;
+    constexpr int num_iters = 1;
     for (int i = 0; i < num_iters; ++i) {
 
         gemm_futures.clear();

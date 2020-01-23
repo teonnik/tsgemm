@@ -3,7 +3,6 @@
 #include <mpi.h>
 #include <complex>
 #include <cstdio>
-#include <hpx/lcos/local/mutex.hpp>
 
 namespace tsgemm {
 

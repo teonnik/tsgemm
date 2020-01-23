@@ -1,9 +1,7 @@
 #pragma once
 
-#include <mpi_utils.hpp>
-
+#include <tsgemm/mpi_utils.hpp>
 #include <mpi.h>
-
 #include <vector>
 
 

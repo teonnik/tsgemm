@@ -1,5 +1,5 @@
-#include <gemm.hpp>
-#include <mpi_utils.hpp>
+#include <tsgemm/gemm.hpp>
+#include <tsgemm/mpi_utils.hpp>
 
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>

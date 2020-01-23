@@ -1,0 +1,5 @@
+file(GLOB tsgemm_SRC "*.cpp")
+add_library(tsgemm STATIC ${tsgemm_SRC})
+target_include_directories(tsgemm PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
+target_compile_features(tsgemm PUBLIC cxx_std_14)
+target_link_libraries(tsgemm PUBLIC MPI::MPI_CXX mkl::blas_32bit_seq hpx)

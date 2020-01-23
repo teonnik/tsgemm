@@ -1,7 +1,6 @@
 #pragma once
 #include <algorithm>
 
-
 namespace tsgemm {
 
 // Represents a dimension of length `len` split into segments of length `seg`.
@@ -11,21 +10,19 @@ struct seg_dim {
   int seg;
 
   // Returns the length of the segment at `seg_index`.
-  int seg_len(int seg_idx) const noexcept {
-    return std::min(el_index(seg_idx + 1), len) - el_index(seg_idx);
-  }
+  int seg_len(int seg_idx) const noexcept;
 
   // Returns the number of segments.
-  int num_seg() const noexcept { return (len + seg - 1) / seg; }
+  int num_seg() const noexcept;
 
   // Returns the `el_index` of the segment at `seg_index`.
-  int el_index(int seg_idx) const noexcept { return seg_idx * seg; }
+  int el_index(int seg_idx) const noexcept; 
 
   // Returns the index of the segment to which the element belongs.
-  int seg_index(int el_idx) const noexcept { return el_idx / seg; }
+  int seg_index(int el_idx) const noexcept;
 
   // The reminder segment is the last segment if non-zero
-  int rem_seg() const noexcept { return len % seg; }
+  int rem_seg() const noexcept;
 };
 
 // 1D block-cyclic distribution with tiles. A dimension of the C matrix.
@@ -38,69 +35,36 @@ struct c_dim {
   int pcoord;
 
   // Splits are el_indices where the matrix C is split.
-  int next_split_offset(int curr_split_offset) const noexcept {
-    return std::min((curr_split_offset / blk + 1) * blk,
-                    (curr_split_offset / tile + 1) * tile);
-  }
+  int next_split_offset(int curr_split_offset) const noexcept;
 
   // A `slab` is a segment made out of `blk` belonging to the current process.
   // `curr_slab_split` is an element index of a split within the slab.
-  int next_slab_split_offset(int slab_split_offset) const noexcept {
-    int csplit_offset = from_slab_el_index(slab_split_offset);
-    int nsplit_offset = next_split_offset(csplit_offset);
-    if (el_pcoord(nsplit_offset) != pcoord)
-      nsplit_offset += (nproc - 1) * blk;
-    return to_slab_el_index(nsplit_offset);
-  }
+  int next_slab_split_offset(int slab_split_offset) const noexcept; 
 
   // Returns the length of the local slab stored at the process
-  int slab_len() const noexcept {
-    seg_dim blk_dim = seg_dim{len, blk};
-    seg_dim proc_dim = seg_dim{blk_dim.num_seg(), nproc};
-    int slab = proc_dim.num_seg() * blk;
-    int rem_pcoords = proc_dim.rem_seg();
-    int rem_len = blk_dim.rem_seg();
-    bool last_pcoord = pcoord == ((rem_pcoords == 0) ? nproc : rem_pcoords) - 1;
-    bool missing_pcoord_in_rem = rem_pcoords != 0 && pcoord > rem_pcoords - 1;
-
-    if (last_pcoord && rem_len != 0)
-      return slab - blk + rem_len;
-    if (missing_pcoord_in_rem)
-      return slab - blk;
-
-    return slab;
-  }
+  int slab_len() const noexcept;
 
   // Returns the coordinate of the process holding the element.
-  int el_pcoord(int el_index) const noexcept {
-    return (el_index / blk) % nproc;
-  }
+  int el_pcoord(int el_index) const noexcept;
 
   // Map: slab_el_index -> el_index
-  int from_slab_el_index(int slab_el_idx) const noexcept {
-    int blk_idx = (slab_el_idx / blk) * nproc + pcoord;
-    return blk_idx * blk + slab_el_idx % blk;
-  }
+  int from_slab_el_index(int slab_el_idx) const noexcept;
 
   // Map: el_index -> slab_el_index
-  int to_slab_el_index(int el_idx) const noexcept {
-    return slab_blk_index(el_idx) * blk + el_idx % blk;
-  }
+  int to_slab_el_index(int el_idx) const noexcept;
 
   // Returns the index of the block holding the element in the slab's frame of
   // reference.
-  int slab_blk_index(int el_idx) const noexcept {
-    return (el_idx / blk) / nproc;
-  }
+  int slab_blk_index(int el_idx) const noexcept;
 
-  seg_dim blk_dim() const noexcept { return seg_dim{len, blk}; }
+  seg_dim blk_dim() const noexcept;
 
-  seg_dim tile_dim() const noexcept { return seg_dim{len, tile}; }
+  seg_dim tile_dim() const noexcept;
 
 }; // end struct c_dim
 
 // Column-major map from (rows, cols) to an index
-int index_map(int rows, int cols, int ld) noexcept { return rows + cols * ld; }
+int index_map(int rows, int cols, int ld) noexcept;
 
 // Iterates over all pieces in column major order
 template <typename RowFunc, typename ColFunc, typename WorkFunc>

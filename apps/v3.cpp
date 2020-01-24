@@ -123,11 +123,12 @@ void schedule_offload_and_send(
                 tag, comm_cart, &req);
 
       // yield if not sent yet
-      yield_while([&req] {
-        int flag;
+      int flag = 0;
+      while (flag == 0) {
         MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
-        return flag == 0;
-      });
+        //        std::cout << "send : " << flag << std::endl;
+        hpx::this_thread::yield();
+      }
     };
 
     // wait on the gemm for the tile
@@ -176,6 +177,7 @@ void schedule_recv_and_load(
 
     auto recv_and_load_func = [=] {
       // recv
+
       auto recv_reqs = std::make_unique<MPI_Request[]>(num_procs);
       for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
         auto &req = recv_reqs[src_rank];
@@ -184,12 +186,12 @@ void schedule_recv_and_load(
                   &req);
       }
 
-      // yield if not yet received
-      hpx::util::yield_while([num_procs, reqs = std::move(recv_reqs)] {
-        int flag;
-        MPI_Testall(num_procs, reqs.get(), &flag, MPI_STATUS_IGNORE);
-        return flag == 0;
-      });
+      // yield if not received yet
+      int flag = 0;
+      while (flag == 0) {
+        MPI_Testall(num_procs, recv_reqs.get(), &flag, MPI_STATUS_IGNORE);
+        hpx::this_thread::yield();
+      }
 
       // load
       for (int src_rank = 0; src_rank < num_procs; ++src_rank) {

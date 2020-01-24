@@ -1,8 +1,8 @@
 #include <tsgemm/mpi_utils.hpp>
 
-#include <mpi.h>
 #include <complex>
 #include <cstdio>
+#include <mpi.h>
 
 namespace tsgemm {
 
@@ -19,8 +19,10 @@ MPI_Datatype get_mpi_type(std::complex<double>) { return MPI_CXX_DOUBLE_COMPLEX;
 } // end namespace detail
 
 // definition
-template <typename scalar> 
-MPI_Datatype get_mpi_type() { return detail::get_mpi_type(scalar{}); }
+template <typename scalar>
+MPI_Datatype get_mpi_type() {
+  return detail::get_mpi_type(scalar{});
+}
 
 // instantiations
 template MPI_Datatype get_mpi_type<float>();
@@ -67,18 +69,18 @@ MPI_Comm init_comm_cart(int pgrid_rows, int pgrid_cols) {
   return comm_cart;
 }
 
-mpi_init::mpi_init(int argc, char** argv, int thd_required) {
+mpi_init::mpi_init(int argc, char **argv, int thd_required) {
   int thd_provided;
   MPI_Init_thread(&argc, &argv, thd_required, &thd_provided);
 
   if (thd_required != thd_provided) {
-    std::fprintf(stderr, "Provided MPI threading model does not match the required one.\n");
+    std::fprintf(
+        stderr,
+        "Provided MPI threading model does not match the required one.\n");
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 }
 
-mpi_init::~mpi_init() {
-  MPI_Finalize();
-}
+mpi_init::~mpi_init() { MPI_Finalize(); }
 
-}  // end namespace tsgemm
+} // end namespace tsgemm

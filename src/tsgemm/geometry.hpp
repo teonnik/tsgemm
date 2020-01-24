@@ -16,7 +16,7 @@ struct seg_dim {
   int num_seg() const noexcept;
 
   // Returns the `el_index` of the segment at `seg_index`.
-  int el_index(int seg_idx) const noexcept; 
+  int el_index(int seg_idx) const noexcept;
 
   // Returns the index of the segment to which the element belongs.
   int seg_index(int el_idx) const noexcept;
@@ -39,7 +39,7 @@ struct c_dim {
 
   // A `slab` is a segment made out of `blk` belonging to the current process.
   // `curr_slab_split` is an element index of a split within the slab.
-  int next_slab_split_offset(int slab_split_offset) const noexcept; 
+  int next_slab_split_offset(int slab_split_offset) const noexcept;
 
   // Returns the length of the local slab stored at the process
   int slab_len() const noexcept;

@@ -18,7 +18,6 @@ int seg_dim::seg_index(int el_idx) const noexcept { return el_idx / seg; }
 
 int seg_dim::rem_seg() const noexcept { return len % seg; }
 
-
 int c_dim::next_split_offset(int curr_split_offset) const noexcept {
   return std::min((curr_split_offset / blk + 1) * blk,
                   (curr_split_offset / tile + 1) * tile);

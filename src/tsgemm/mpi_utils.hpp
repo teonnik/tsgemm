@@ -1,14 +1,14 @@
 #pragma once
 
-#include <mpi.h>
+#include <array>
 #include <complex>
 #include <cstdio>
-#include <array>
+#include <mpi.h>
 
 namespace tsgemm {
 
 // Map between C++ and MPI types.
-template <typename scalar> 
+template <typename scalar>
 MPI_Datatype get_mpi_type();
 
 void check_num_procs(int exp_num_procs);
@@ -23,8 +23,8 @@ MPI_Comm init_comm_cart(int pgrid_rows, int pgrid_cols);
 
 // Wrap MPI runtime initialization and destruction.
 struct mpi_init {
-  mpi_init(int argc, char** argv, int thd_required);
+  mpi_init(int argc, char **argv, int thd_required);
   ~mpi_init();
-};  // end struct mpi_init
+}; // end struct mpi_init
 
-}  // end namespace tsgemm
+} // end namespace tsgemm

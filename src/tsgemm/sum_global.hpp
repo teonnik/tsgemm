@@ -1,9 +1,8 @@
 #pragma once
 
-#include <tsgemm/mpi_utils.hpp>
 #include <mpi.h>
+#include <tsgemm/mpi_utils.hpp>
 #include <vector>
-
 
 namespace tsgemm {
 

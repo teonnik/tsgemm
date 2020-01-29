@@ -29,7 +29,6 @@ void schedule_local_gemm(tsgemm::seg_dim m_dim, tsgemm::seg_dim n_dim,
                          std::vector<scalar> &c_buffer,
                          std::vector<hpx::shared_future<void>> &cini_futures) {
   // Futures for all tiles in column major order.
-
   using tsgemm::index_map;
 
   int lda = k_dim.len;

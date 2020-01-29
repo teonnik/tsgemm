@@ -14,6 +14,11 @@
 #include <cstdio>
 #include <vector>
 
+// TODO:
+// - manual while loop
+// - MPI_THREAD_SERIALIZED
+// - yield_while mechanism
+
 // Local gemm
 //
 // - Tiles along the `k` dimension are chained.
@@ -119,8 +124,11 @@ void schedule_offload_and_send(
 
       // send
       MPI_Request req;
-      MPI_Isend(send_ptr, num_elems, tsgemm::get_mpi_type<scalar>(), dest_rank,
-                tag, comm_cart, &req);
+      {
+        //          std::lock_guard<hpx::lcos::local::mutex> lk(mt);
+        MPI_Isend(send_ptr, num_elems, tsgemm::get_mpi_type<scalar>(),
+                  dest_rank, tag, comm_cart, &req);
+      }
 
       // yield if not sent yet
       yield_while([&req] {
@@ -128,6 +136,13 @@ void schedule_offload_and_send(
         MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
         return flag == 0;
       });
+
+      // manual yield
+      //      int flag = 0;
+      //      while (flag == 0) {
+      //        MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
+      //        hpx::this_thread::yield();
+      //      }
     };
 
     // wait on the gemm for the tile
@@ -177,11 +192,14 @@ void schedule_recv_and_load(
     auto recv_and_load_func = [=] {
       // recv
       auto recv_reqs = std::make_unique<MPI_Request[]>(num_procs);
-      for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
-        auto &req = recv_reqs[src_rank];
-        MPI_Irecv(recv_ptr + src_rank * num_elems, num_elems,
-                  tsgemm::get_mpi_type<scalar>(), src_rank, tag, comm_cart,
-                  &req);
+      {
+        //        std::lock_guard<hpx::lcos::local::mutex> lk(mt);
+        for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
+          auto &req = recv_reqs[src_rank];
+          MPI_Irecv(recv_ptr + src_rank * num_elems, num_elems,
+                    tsgemm::get_mpi_type<scalar>(), src_rank, tag, comm_cart,
+                    &req);
+        }
       }
 
       // yield if not yet received
@@ -190,6 +208,12 @@ void schedule_recv_and_load(
         MPI_Testall(num_procs, reqs.get(), &flag, MPI_STATUS_IGNORE);
         return flag == 0;
       });
+
+      //      int flag = 0;
+      //      while (flag == 0) {
+      //        MPI_Testall(num_procs, recv_reqs.get(), &flag,
+      //        MPI_STATUS_IGNORE); hpx::this_thread::yield();
+      //      }
 
       // load
       for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
@@ -304,6 +328,9 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   gemm_futures.reserve(num_tiles);
   comm_futures.reserve(4 * len_m * len_n / (seg_m * seg_n));
 
+  // mutex
+  // hpx::lcos::local::mutex mt;
+
   // 0. Reset buffers
   // 1. Schedule multiply
   // 3. Schedule offloads and receives after multiply
@@ -373,6 +400,7 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
 //                       --blk_rows    32  --blk_cols    32
 //
 int main(int argc, char **argv) {
+  // MPI_THREAD_SERIALIZED
   auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
   return hpx::init(tsgemm_main, tsgemm::init_desc(), argc, argv);
 }

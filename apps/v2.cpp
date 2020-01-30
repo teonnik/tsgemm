@@ -251,8 +251,7 @@ void schedule_recv_and_load(
 // All matrices are distributed in column-major order.
 //
 int tsgemm_main(hpx::program_options::variables_map &vm) {
-  //  using scalar_t = std::complex<double>;
-  using scalar_t = double;
+  using scalar_t = std::complex<double>;
   using clock_t = std::chrono::high_resolution_clock;
   using seconds_t = std::chrono::duration<double>;
 
@@ -337,7 +336,7 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   // 2. Schedule sends and loads
   // 4. Wait for all
   //
-  constexpr int num_iters = 1;
+  constexpr int num_iters = 5;
   for (int i = 0; i < num_iters; ++i) {
 
     gemm_futures.clear();
@@ -371,23 +370,23 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
     if (rank == 0) {
       // clang-format off
       printf("%d: t_tot  [s] = %.5f\n", i, seconds_t(t1_tot - t0_tot).count());
-      printf("%d: t_gemm [s] = %.5f\n", i, seconds_t(t1_gemm - t0_gemm).count());
-      printf("%d: t_recv [s] = %.5f\n", i, seconds_t(t1_recv - t0_recv).count());
-      printf("%d: t_send [s] = %.5f\n", i, seconds_t(t1_send - t0_send).count());
-      printf("%d: t_wait [s] = %.5f\n", i, seconds_t(t1_wait - t0_wait).count());
+      //printf("%d: t_gemm [s] = %.5f\n", i, seconds_t(t1_gemm - t0_gemm).count());
+      //printf("%d: t_recv [s] = %.5f\n", i, seconds_t(t1_recv - t0_recv).count());
+      //printf("%d: t_send [s] = %.5f\n", i, seconds_t(t1_send - t0_send).count());
+      //printf("%d: t_wait [s] = %.5f\n", i, seconds_t(t1_wait - t0_wait).count());
       // clang-format on
     }
   }
 
   // Simple check
-  std::stringstream ss;
-  using tsgemm::sum_global;
-  ss << "cini sum = " << sum_global(comm_cart, cini_buffer) << '\n';
-  ss << "send sum = " << sum_global(comm_cart, send_buffer) << '\n';
-  ss << "recv sum = " << sum_global(comm_cart, recv_buffer) << '\n';
-  ss << "cfin sum = " << sum_global(comm_cart, cfin_buffer) << '\n';
-  if (rank == 0)
-    std::cout << ss.str() << '\n';
+  //std::stringstream ss;
+  //using tsgemm::sum_global;
+  //ss << "cini sum = " << sum_global(comm_cart, cini_buffer) << '\n';
+  //ss << "send sum = " << sum_global(comm_cart, send_buffer) << '\n';
+  //ss << "recv sum = " << sum_global(comm_cart, recv_buffer) << '\n';
+  //ss << "cfin sum = " << sum_global(comm_cart, cfin_buffer) << '\n';
+  //if (rank == 0)
+  //  std::cout << ss.str() << '\n';
 
   return hpx::finalize();
 }

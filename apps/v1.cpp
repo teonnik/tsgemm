@@ -54,11 +54,12 @@ void schedule_local_gemm(tsgemm::seg_dim m_dim, tsgemm::seg_dim n_dim,
         scalar const *a_ptr = a_buffer.data() + a_offset;
         scalar const *b_ptr = b_buffer.data() + b_offset;
 
-        cini_fut =
-            hpx::dataflow(hpx::util::unwrapping(hpx::util::annotated_function(
-                              tsgemm::gemm<scalar>, "gemm")),
-                          len_m, len_n, len_k, scalar(1), a_ptr, lda, b_ptr,
-                          ldb, scalar(1), c_ptr, ldc, cini_fut);
+        cini_fut = cini_fut.then(hpx::util::annotated_function(
+            [=](auto &&/*cini_fut*/){
+                tsgemm::gemm<scalar>(
+                    len_m, len_n, len_k, scalar(1), a_ptr, lda, b_ptr,
+                    ldb, scalar(1), c_ptr, ldc);
+            }, "gemm"));
       }
       cini_futures.push_back(std::move(cini_fut));
     }
@@ -102,10 +103,11 @@ void schedule_offload_and_send(
     scalar *send_ptr = send_buffer.data() + snd_offset;
 
     // schedule offload
-    auto offload_fut = hpx::dataflow(
-        hpx::util::unwrapping(
-            hpx::util::annotated_function(accumulate<scalar, 0>, "offload")),
-        prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld, gemm_futures[tidx]);
+    auto offload_fut = gemm_futures[tidx].then(
+        hpx::util::annotated_function([=](auto &&/*gemm*/){
+            accumulate<scalar, 0>(prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld);
+        }, "offload")
+    );
 
     // schedule send
     int num_elems = prlen * pclen;

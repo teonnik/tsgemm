@@ -94,12 +94,6 @@ chmod 775 run_jobs.bash
 MPIEXEC="@MPIEXEC@"
 EXE_V1=@EXE_V1@
 EXE_V2=@EXE_V2@
-JOB_OPTIONS1="@JOB_OPTIONS1@"
-
-# if there are no parcelports enabled
-if [[ -z "${PARCELPORTS// }" ]]; then
-    NETWORK=0
-fi
 
 #
 # Options we might need

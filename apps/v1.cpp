@@ -225,11 +225,20 @@ int hpx_main(hpx::program_options::variables_map &vm)
 {
   // Tell the scheduler that we want to handle mpi in the background
   // and use the provided hpx::mpi::poll function
-  auto const &pool = hpx::resource::get_thread_pool("mpi");
+#ifdef TSGEMM_USE_MPI_POOL
+  // if we are using an MPI pool, enable polling on that
+  std::string pool_name = "mpi";
+#else
+  // use default pool for polling
+  std::string pool_name = "default";
+#endif
+  auto const &pool = hpx::resource::get_thread_pool(pool_name);
   auto *sched = pool.get_scheduler();
   sched->set_user_polling_function(&hpx::mpi::poll);
   sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
-  mpi_executor = hpx::threads::executors::pool_executor("mpi");
+
+  // an executor that can be used to place work on the MPI pool if it is enabled
+  mpi_executor = hpx::threads::executors::pool_executor(pool_name);
 
   using scalar_t = std::complex<double>;
   using clock_t = std::chrono::high_resolution_clock;
@@ -386,6 +395,7 @@ int main(int argc, char **argv)
     // declare options before creating resource partitioner
     hpx::program_options::options_description desc_cmdline = tsgemm::init_desc();
 
+#ifdef TSGEMM_USE_MPI_POOL
     // Create resource partitioner
     hpx::resource::partitioner rp(desc_cmdline, argc, argv);
 
@@ -394,10 +404,12 @@ int main(int argc, char **argv)
 
     // add (enabled) PUs on the first core to it
     rp.add_resource(rp.numa_domains()[0].cores()[0].pus(), "mpi");
+    std::cout << "mpi pool created : TSGEMM_USE_MPI_POOL" << std::endl;
+#endif
 
     // initialize MPI
     auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
 
     // start the HPX runtime
-    return hpx::init(argc, argv);
+    return hpx::init(desc_cmdline, argc, argv);
 }

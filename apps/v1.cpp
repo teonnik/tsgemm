@@ -5,6 +5,7 @@
 #include <tsgemm/mpi_utils.hpp>
 #include <tsgemm/sum_global.hpp>
 
+#include <hpx/include/resource_partitioner.hpp>
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
 #include <hpx/mpi/mpi_future.hpp>
@@ -213,7 +214,16 @@ void schedule_recv_and_load(
 //
 // All matrices are distributed in column-major order.
 //
-int tsgemm_main(hpx::program_options::variables_map &vm) {
+int hpx_main(hpx::program_options::variables_map &vm)
+{
+  // Tell the scheduler that we want to handle mpi in the background
+  // and use the provided hpx::mpi::poll function
+  auto const &pool = hpx::resource::get_thread_pool("mpi");
+  auto *sched = pool.get_scheduler();
+  sched->set_user_polling_function(&hpx::mpi::poll);
+  sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
+
+
   using scalar_t = std::complex<double>;
   using clock_t = std::chrono::high_resolution_clock;
   using seconds_t = std::chrono::duration<double>;
@@ -290,13 +300,6 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   gemm_futures.reserve(num_tiles);
   comm_futures.reserve(4 * len_m * len_n / (seg_m * seg_n));
 
-  // Tell the scheduler that we want to handle mpi in the background
-  // and use the provided hpx::mpi::poll function
-  //
-  auto const sched = hpx::threads::get_self_id_data()->get_scheduler_base();
-  sched->set_user_polling_function(&hpx::mpi::poll);
-  sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
-
   // 0. Reset buffers
   // 1. Schedule multiply
   // 3. Schedule offloads and receives after multiply
@@ -368,7 +371,26 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
 //                       --pgrid_rows   1  --pgrid_cols   1
 //                       --blk_rows    32  --blk_cols    32
 //
-int main(int argc, char **argv) {
-  auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
-  return hpx::init(tsgemm_main, tsgemm::init_desc(), argc, argv);
+int main(int argc, char **argv)
+{
+    // NB.
+    // thread pools must be declared before starting the runtime
+
+    // declare options before creating resource partitioner
+    hpx::program_options::options_description desc_cmdline = tsgemm::init_desc();
+
+    // Create resource partitioner
+    hpx::resource::partitioner rp(desc_cmdline, argc, argv);
+
+    // create a thread pool that is not "default" that we will use for MPI work
+    rp.create_thread_pool("mpi");
+
+    // add (enabled) PUs on the first core to it
+    rp.add_resource(rp.numa_domains()[0].cores()[0].pus(), "mpi");
+
+    // initialize MPI
+    auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
+
+    // start the HPX runtime
+    return hpx::init(argc, argv);
 }

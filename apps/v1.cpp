@@ -180,8 +180,12 @@ void schedule_recv_and_load(
     }
 
     auto load_fut = hpx::dataflow(
-        hpx::util::unwrapping(schedule_blk_load<scalar>), num_procs, recv_ptr,
-        prlen, pclen, recv_ld, cfin_ptr, cfin_ld, recv_futures);
+        hpx::util::annotated_function(
+            [=](auto && /*fs*/){
+                    schedule_blk_load<scalar>(num_procs,
+                        recv_ptr, prlen, pclen, recv_ld, cfin_ptr, cfin_ld);
+                }, "blk_load"), recv_futures);
+
     comm_futures.push_back(std::move(load_fut));
 
     rcv_offset += num_procs * num_elems;

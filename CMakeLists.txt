@@ -9,3 +9,4 @@ find_package(MKL REQUIRED COMPONENTS BLAS_32BIT_SEQ)
 
 add_subdirectory(src/tsgemm)
 add_subdirectory(apps)
+add_subdirectory(scripts)

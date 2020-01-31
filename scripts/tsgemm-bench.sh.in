@@ -1,0 +1,156 @@
+#!/bin/bash
+
+#   Copyright (c) 2014 John Biddiscombe
+#   Adapted from stuff found originally somewhere on the internet
+#
+#   Distributed under the Boost Software License, Version 1.0. (See accompanying
+#   file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+
+# This function writes a slurm script.
+# We can call it with different parameter
+# settings to create different experiments
+
+function write_script
+{
+JOB_NAME=$(printf 'TSGEMM-N%04d-S%03d.%03d-T%03d.T2%03d-C%03d-R%03d-%s' ${NODES} ${SIZE_1} ${SIZE_2} ${TILE_1} ${TILE_2} $COLS $ROWS ${QUEUING} )
+DIR_NAME=${JOB_NAME}
+
+if [ -d "$DIR_NAME" ]; then
+  # Directory already exists, skip generation of this job
+  echo "Exists already : Skipping $DIR_NAME"
+  return 1
+fi
+
+echo "Creating job $DIR_NAME"
+
+mkdir -p $DIR_NAME
+
+cat << _EOF_ > ${DIR_NAME}/submit-job.bash
+#!/bin/bash
+
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --output=slurm.out
+#SBATCH --error=slurm.err
+#SBATCH --nodes=$(( ${NODES} / ${PROCESSES_PERNODE} ))
+#SBATCH --time=${TIME}
+#SBATCH --ntasks-per-node=2
+#SBATCH --constraint=mc
+#SBATCH --partition=${QUEUE}
+
+#======START=====
+module load slurm
+
+# needed on the cray for MPI_THREAD_MULTIPLE
+export MPICH_MAX_THREAD_SAFETY=multiple
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# if apex is enabled, uncomment this
+#export APEX_SCREEN_OUTPUT=1; export APEX_PROFILE=1; export APEX_OTF2=1
+
+# execute test V1
+export APEX_OTF2_ARCHIVE_PATH="v1-OTF"
+CMD="timeout 600s srun -n $NODES ${SLURM_ARGS} ${NUMACTL_ARGS} ${EXE_V1} ${PROGRAM_PARAMS}"
+printf "\n\n\nExecuting \$CMD \n"
+\$CMD
+
+# execute test V2
+export APEX_OTF2_ARCHIVE_PATH="v2-OTF"
+CMD="timeout 600s srun -n $NODES ${SLURM_ARGS} ${NUMACTL_ARGS} ${EXE_V2} ${PROGRAM_PARAMS}"
+printf "\n\n\nExecuting \$CMD \n"
+\$CMD
+
+_EOF_
+
+# make the job script executable
+chmod 775 ${DIR_NAME}/submit-job.bash
+
+# create a command that launches the job and adds the jobid to the cancel jobs script
+echo "cd ${DIR_NAME}; JOB=\$(sbatch submit-job.bash) ; echo \"\$JOB\" ; echo \"\$JOB\" | sed 's/Submitted batch job/scancel/g' >> \$BASEDIR/cancel_jobs.bash; cd \$BASEDIR" >> run_jobs.bash
+
+}
+
+# get the path to this generate script, works for most cases
+pushd `dirname $0` > /dev/null
+BASEDIR=`pwd`
+popd > /dev/null
+echo "Generating jobs using base directory $BASEDIR"
+
+# Create another script to submit all generated jobs to the scheduler
+echo "#!/bin/bash" > run_jobs.bash
+echo "BASEDIR=$BASEDIR" >> run_jobs.bash
+echo "cd $BASEDIR" >> run_jobs.bash
+echo "echo \"#!/bin/bash\" > cancel_jobs.bash" >> run_jobs.bash
+echo "chmod +x cancel_jobs.bash" >> run_jobs.bash
+
+#!/bin/bash
+
+chmod 775 run_jobs.bash
+
+#
+# fixed options that are put here by cmake
+#
+MPIEXEC="@MPIEXEC@"
+EXE_V1=@EXE_V1@
+EXE_V2=@EXE_V2@
+JOB_OPTIONS1="@JOB_OPTIONS1@"
+
+# if there are no parcelports enabled
+if [[ -z "${PARCELPORTS// }" ]]; then
+    NETWORK=0
+fi
+
+#
+# Options we might need
+# time format = HH:MM:SS
+TIME="00:10:00"
+PROCESSES_PERNODE=2
+THREADS_PERTASK=18
+
+# Loop through all the parameter combinations generating jobs for each
+
+for SIZE_1 in 500
+do
+  for SIZE_2 in 523305
+  do
+    for TILE_1 in 32
+    do
+      for TILE_2 in 10000
+      do
+        for COLS in 4
+        do
+          for ROWS in 6
+          do
+            for QUEUING in "shared-priority"
+            do
+
+              NODES=$(($ROWS * $COLS))
+              if [ "$NODES" == "4096" ]; then
+                QUEUE=large
+                #elif [ "$NODES" -lt "4" ]; then
+                #QUEUE=debug
+              else
+                QUEUE=normal
+              fi
+
+              # --hpx:bind=numa-balanced
+              HPX_ARGS="${HPX_NETWORK_ARGS} --hpx:use-process-mask --hpx:print-bind --hpx:threads=${THREADS_PERTASK} --hpx:queuing=${QUEUING} "
+
+              #DEBUG_ARGS="--hpx:attach-debugger=exception "
+              #TSGEMM_HPX_ARGS="--hpx:threads=${THREADS_PERTASK} "
+
+              ARGS1="--pgrid_rows=$ROWS --pgrid_cols=$COLS"
+              ARGS2="--len_m=$SIZE_1  --len_n=$SIZE_1  --len_k=$SIZE_2"
+              ARGS3="--tile_m=$TILE_1 --tile_n=$TILE_1 --tile_k=$TILE_2"
+
+              PROGRAM_PARAMS="${HPX_ARGS} ${TSGEMM_HPX_ARGS} ${ARGS1} ${ARGS2} ${ARGS3}"
+              write_script
+            done
+          done
+        done
+      done
+    done
+  done
+done
+

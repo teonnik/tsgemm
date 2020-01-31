@@ -10,11 +10,17 @@
 #include <hpx/hpx.hpp>
 #include <hpx/mpi/mpi_future.hpp>
 
+#include <hpx/include/threads.hpp>
+#include <hpx/runtime/threads/executors/pool_executor.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <complex>
 #include <cstdio>
 #include <vector>
+
+// make this a global var for now
+static hpx::threads::executors::pool_executor mpi_executor;
 
 // Local gemm
 //
@@ -105,6 +111,7 @@ void schedule_offload_and_send(
 
     // schedule offload
     auto offload_fut = gemm_futures[tidx].then(
+        mpi_executor,
         hpx::util::annotated_function([=](auto &&/*gemm*/){
             accumulate<scalar, 0>(prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld);
         }, "offload")
@@ -222,7 +229,7 @@ int hpx_main(hpx::program_options::variables_map &vm)
   auto *sched = pool.get_scheduler();
   sched->set_user_polling_function(&hpx::mpi::poll);
   sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
-
+  mpi_executor = hpx::threads::executors::pool_executor("mpi");
 
   using scalar_t = std::complex<double>;
   using clock_t = std::chrono::high_resolution_clock;

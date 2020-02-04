@@ -5,15 +5,22 @@
 #include <tsgemm/mpi_utils.hpp>
 #include <tsgemm/sum_global.hpp>
 
+#include <hpx/include/resource_partitioner.hpp>
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
 #include <hpx/mpi/mpi_future.hpp>
+
+#include <hpx/include/threads.hpp>
+#include <hpx/runtime/threads/executors/pool_executor.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <complex>
 #include <cstdio>
 #include <vector>
+
+// make this a global var for now
+static hpx::threads::executors::pool_executor mpi_executor;
 
 // Local gemm
 //
@@ -54,11 +61,12 @@ void schedule_local_gemm(tsgemm::seg_dim m_dim, tsgemm::seg_dim n_dim,
         scalar const *a_ptr = a_buffer.data() + a_offset;
         scalar const *b_ptr = b_buffer.data() + b_offset;
 
-        cini_fut =
-            hpx::dataflow(hpx::util::unwrapping(hpx::util::annotated_function(
-                              tsgemm::gemm<scalar>, "gemm")),
-                          len_m, len_n, len_k, scalar(1), a_ptr, lda, b_ptr,
-                          ldb, scalar(1), c_ptr, ldc, cini_fut);
+        cini_fut = cini_fut.then(hpx::util::annotated_function(
+            [=](auto &&/*cini_fut*/){
+                tsgemm::gemm<scalar>(
+                    len_m, len_n, len_k, scalar(1), a_ptr, lda, b_ptr,
+                    ldb, scalar(1), c_ptr, ldc);
+            }, "gemm"));
       }
       cini_futures.push_back(std::move(cini_fut));
     }
@@ -102,10 +110,12 @@ void schedule_offload_and_send(
     scalar *send_ptr = send_buffer.data() + snd_offset;
 
     // schedule offload
-    auto offload_fut = hpx::dataflow(
-        hpx::util::unwrapping(
-            hpx::util::annotated_function(accumulate<scalar, 0>, "offload")),
-        prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld, gemm_futures[tidx]);
+    auto offload_fut = gemm_futures[tidx].then(
+        mpi_executor,
+        hpx::util::annotated_function([=](auto &&/*gemm*/){
+            accumulate<scalar, 0>(prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld);
+        }, "offload")
+    );
 
     // schedule send
     int num_elems = prlen * pclen;
@@ -178,8 +188,12 @@ void schedule_recv_and_load(
     }
 
     auto load_fut = hpx::dataflow(
-        hpx::util::unwrapping(schedule_blk_load<scalar>), num_procs, recv_ptr,
-        prlen, pclen, recv_ld, cfin_ptr, cfin_ld, recv_futures);
+        hpx::util::annotated_function(
+            [=](auto && /*fs*/){
+                    schedule_blk_load<scalar>(num_procs,
+                        recv_ptr, prlen, pclen, recv_ld, cfin_ptr, cfin_ld);
+                }, "blk_load"), recv_futures);
+
     comm_futures.push_back(std::move(load_fut));
 
     rcv_offset += num_procs * num_elems;
@@ -207,7 +221,25 @@ void schedule_recv_and_load(
 //
 // All matrices are distributed in column-major order.
 //
-int tsgemm_main(hpx::program_options::variables_map &vm) {
+int hpx_main(hpx::program_options::variables_map &vm)
+{
+  // Tell the scheduler that we want to handle mpi in the background
+  // and use the provided hpx::mpi::poll function
+#ifdef TSGEMM_USE_MPI_POOL
+  // if we are using an MPI pool, enable polling on that
+  std::string pool_name = "mpi";
+#else
+  // use default pool for polling
+  std::string pool_name = "default";
+#endif
+  auto const &pool = hpx::resource::get_thread_pool(pool_name);
+  auto *sched = pool.get_scheduler();
+  sched->set_user_polling_function(&hpx::mpi::poll);
+  sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
+
+  // an executor that can be used to place work on the MPI pool if it is enabled
+  mpi_executor = hpx::threads::executors::pool_executor(pool_name);
+
   using scalar_t = std::complex<double>;
   using clock_t = std::chrono::high_resolution_clock;
   using seconds_t = std::chrono::duration<double>;
@@ -284,13 +316,6 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
   gemm_futures.reserve(num_tiles);
   comm_futures.reserve(4 * len_m * len_n / (seg_m * seg_n));
 
-  // Tell the scheduler that we want to handle mpi in the background
-  // and use the provided hpx::mpi::poll function
-  //
-  auto const sched = hpx::threads::get_self_id_data()->get_scheduler_base();
-  sched->set_user_polling_function(&hpx::mpi::poll);
-  sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
-
   // 0. Reset buffers
   // 1. Schedule multiply
   // 3. Schedule offloads and receives after multiply
@@ -362,7 +387,29 @@ int tsgemm_main(hpx::program_options::variables_map &vm) {
 //                       --pgrid_rows   1  --pgrid_cols   1
 //                       --blk_rows    32  --blk_cols    32
 //
-int main(int argc, char **argv) {
-  auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
-  return hpx::init(tsgemm_main, tsgemm::init_desc(), argc, argv);
+int main(int argc, char **argv)
+{
+    // NB.
+    // thread pools must be declared before starting the runtime
+
+    // declare options before creating resource partitioner
+    hpx::program_options::options_description desc_cmdline = tsgemm::init_desc();
+
+#ifdef TSGEMM_USE_MPI_POOL
+    // Create resource partitioner
+    hpx::resource::partitioner rp(desc_cmdline, argc, argv);
+
+    // create a thread pool that is not "default" that we will use for MPI work
+    rp.create_thread_pool("mpi");
+
+    // add (enabled) PUs on the first core to it
+    rp.add_resource(rp.numa_domains()[0].cores()[0].pus(), "mpi");
+    std::cout << "mpi pool created : TSGEMM_USE_MPI_POOL" << std::endl;
+#endif
+
+    // initialize MPI
+    auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
+
+    // start the HPX runtime
+    return hpx::init(desc_cmdline, argc, argv);
 }

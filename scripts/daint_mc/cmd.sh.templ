@@ -1,0 +1,36 @@
+#!/bin/bash
+
+if [[ $SLURM_PROCID == 0 ]]; then
+  export APEX_OTF2={apex}
+  #export APEX_PROFILE=1
+  #export APEX_SCREEN_OUTPUT=1
+fi
+
+#  --hpx:print-bind
+#  --hpx:threads={job_threads_per_proc}
+read -r -d '' params << EOL
+  --hpx:use-process-mask
+  --hpx:queuing=shared-priority
+  --len_m      {len_m}
+  --len_n      {len_n}
+  --len_k      {len_k}
+  --tile_m     {tile_m}
+  --tile_n     {tile_n}
+  --tile_k     {tile_k}
+  --pgrid_rows {pgrid_rows}
+  --pgrid_cols {pgrid_cols}
+  --blk_rows   {blk_rows}
+  --blk_cols   {blk_cols}
+EOL
+
+if [[ "{v1}" == "True" ]]; then
+  export APEX_OTF2_ARCHIVE_PATH="v1-OTF"
+  {build_dir}/apps/v1 $params
+  printf "\n\n\n {build_dir}/apps/v1 $params \n\n\n"
+fi
+
+if [[ "{v2}" == "True" ]]; then
+  export APEX_OTF2_ARCHIVE_PATH="v2-OTF"
+  {build_dir}/apps/v2 $params
+  printf "\n\n\n {build_dir}/apps/v2 $params \n\n\n"
+fi

@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --constraint=mc
+#SBATCH --partition={job_queue}
+#SBATCH --nodes={job_nodes}
+#SBATCH --time={job_time}
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=18
+#SBATCH --hint=nomultithread
+#SBATCH --output=output.txt
+#SBATCH --error=error.txt
+
+source {source_dir}/scripts/daint_mc/env.sh
+
+# MPI_THREAD_MULTIPLE for Cray
+export MPICH_MAX_THREAD_SAFETY=multiple
+
+srun ./cmd.sh

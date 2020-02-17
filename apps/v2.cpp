@@ -17,11 +17,6 @@
 #include <cstdio>
 #include <vector>
 
-// TODO:
-// - manual while loop
-// - MPI_THREAD_SERIALIZED
-// - yield_while mechanism
-
 // Local gemm
 //
 // - Tiles along the `k` dimension are chained.
@@ -301,21 +296,25 @@ int hpx_main(hpx::program_options::variables_map &vm) {
   int rank = tsgemm::get_proc_rank(comm_cart);
   int num_procs = pgrid_rows * pgrid_cols;
 
-  if (rank == 0) {
-    printf("len mnk  = %d %d %d\n", len_m, len_n, len_k);
-    printf("tile mnk = %d %d %d\n", tile_m, tile_n, tile_k);
-    printf("pgrid    = %d %d\n", pgrid_rows, pgrid_cols);
-    printf("blk      = %d %d\n", blk_rows, blk_cols);
-  }
-
   // Checks
   //
   tsgemm::check_num_procs(num_procs);
 
-  if (tile_m > len_m)
+  if (tile_m > len_m) {
     throw std::invalid_argument("[ERROR] tile_m > m");
-  if (tile_n > len_n)
+  }
+  if (tile_n > len_n) {
     throw std::invalid_argument("[ERROR] tile_n > n");
+  }
+  if (!(tile_m % blk_rows == 0 || blk_rows % tile_m == 0)) {
+    throw std::invalid_argument(
+        "[ERROR] tile_m and blk_rows should be multiple of each other.");
+  }
+
+  if (!(tile_n % blk_cols == 0 || blk_cols % tile_n == 0)) {
+    throw std::invalid_argument(
+        "[ERROR] tile_n and blk_cols should be multiple of each other.");
+  }
 
   // Local distribution of A and B. Only the `k` dimension is split. In
   // SIRIUS, `k_loc` is approximately equally distributed. `k_loc` coincides
@@ -350,13 +349,35 @@ int hpx_main(hpx::program_options::variables_map &vm) {
   int num_tiles = m_dim.tile_dim().num_seg() * n_dim.tile_dim().num_seg();
   int seg_m = std::min(tile_m, blk_rows);
   int seg_n = std::min(tile_n, blk_cols);
+  int num_pieces = (len_m + seg_m - 1) * (len_n + seg_n - 1) / (seg_m * seg_n);
   std::vector<hpx::shared_future<void>> gemm_futures;
   std::vector<hpx::future<void>> comm_futures;
   gemm_futures.reserve(num_tiles);
-  comm_futures.reserve(4 * len_m * len_n / (seg_m * seg_n));
+  comm_futures.reserve(2 * num_pieces);
 
   // mutex
   // hpx::lcos::local::mutex mt;
+
+  // Check if too many non-blocking communications are being issued.
+  constexpr int max_comms = 1000;
+  // TODO: order the communications by sending `num_comm_cols` columns at once
+  // TODO: schedule the gemms associated with the columns first
+  //  int m_numcols = (len_m + seg_m - 1) / seg_m;
+  //  int num_comm_cols = (max_comms + m_numcols - 1) / m_numcols;
+  if (num_pieces > max_comms) {
+    printf("[WARNING] There are too many pieces! Increase the block size, tile "
+           "size or both!");
+  }
+
+  // setup
+  if (rank == 0) {
+    printf("len mnk    = %d %d %d\n", len_m, len_n, len_k);
+    printf("tile mnk   = %d %d %d\n", tile_m, tile_n, tile_k);
+    printf("pgrid      = %d %d\n", pgrid_rows, pgrid_cols);
+    printf("blk        = %d %d\n", blk_rows, blk_cols);
+    printf("k_loc      = %d\n", k_loc);
+    printf("num_pieces = %d\n", num_pieces);
+  }
 
   // 0. Reset buffers
   // 1. Schedule multiply

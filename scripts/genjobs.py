@@ -1,4 +1,4 @@
-#!/bin/env python
+#!/usr/bin/env python
 from os import makedirs, stat, chmod
 from stat import S_IEXEC
 from datetime import datetime
@@ -6,21 +6,20 @@ from datetime import datetime
 # --------------- parameters
 force_generate_job = False  # If True overwrites existing job if any
 job_time = 10 # [min]
-v1 = True
-v2 = False
+exe_str = 'v2_pool' # v1 v2 v1_pool v2_pool
 arch = 'mc' # or 'gpu'
 apex = 1 # or 0 for no APEX
 
-len_m = 500
-len_n = 500
+len_m = 3000
+len_n = 3000
 len_k = 523000
-tile_m = 128
-tile_n = 128
+tile_m = 512
+tile_n = 512
 tile_k = 10000
 pgrid_rows = 5
 pgrid_cols = 2
-blk_rows = 32
-blk_cols = 32
+blk_rows = 512
+blk_cols = 512
 
 # set via cmake or manually
 build_dir = "@PROJECT_BINARY_DIR@"

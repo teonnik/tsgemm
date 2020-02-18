@@ -10,9 +10,16 @@
 #SBATCH --output=output.txt
 #SBATCH --error=error.txt
 
-source {source_dir}/scripts/daint_mc/env.sh
+source {source_dir}/scripts/daint/env.sh
 
 # MPI_THREAD_MULTIPLE for Cray
 export MPICH_MAX_THREAD_SAFETY=multiple
 
+# modules snapshot
+module list &> modules.txt
+
+# environment snapshot
+printenv > ent.txt
+
+# run code
 srun ./cmd.sh

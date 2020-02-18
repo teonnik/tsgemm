@@ -25,9 +25,12 @@ fi
 
 for exe_name in {exe_str}
 do
+  cmd = {build_dir}/apps/$exe_name
   export APEX_OTF2_ARCHIVE_PATH="$exe_name-OTF"
   if [[ $SLURM_PROCID == 0 ]]; then
-    printf "\n\n\n {build_dir}/apps/$exe_name $params \n\n\n"
+    ldd $cmd > libs_$exe_name.txt # list libraries
+    printf "\n ---- $cmd_exe  ---- \n"
+    printf "$params\n"
   fi
-  {build_dir}/apps/$exe_name $params
+  $cmd
 done

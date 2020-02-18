@@ -20,3 +20,6 @@ module load intel
 module load cray-mpich
 module unload cray-libsci
 
+# dependencies
+#hpx_dir=/apps/daint/UES/biddisco/build/hpx-debug/lib/cmake/HPX  # Debug
+hpx_dir=$HOME/software/hpx-futures

@@ -44,11 +44,11 @@ job_name = ('{date_str}__'
 makedirs(job_name, exist_ok=force_generate_job)
 
 # read  templates
-cmd_template = '{}/scripts/daint_mc/cmd.sh.templ'.format(source_dir)
+cmd_template = '{}/scripts/daint/cmd.sh.templ'.format(source_dir)
 with open(cmd_template, 'r') as f:
     cmd_text = f.read().format(**locals())
 
-job_template = '{}/scripts/daint_mc/job.sh.templ'.format(source_dir)
+job_template = '{}/scripts/daint/job.sh.templ'.format(source_dir)
 with open(job_template, 'r') as f:
     job_text = f.read().format(**locals())
 

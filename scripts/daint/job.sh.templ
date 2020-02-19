@@ -19,7 +19,10 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 module list &> modules.txt
 
 # environment snapshot
-printenv > ent.txt
+printenv > env.txt
+
+# libraries snapshot
+echo -n > libs.txt
 
 # run code
 srun ./cmd.sh

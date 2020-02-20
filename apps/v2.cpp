@@ -369,7 +369,7 @@ int hpx_main(hpx::program_options::variables_map &vm) {
            "size or both!");
   }
 
-  // setup
+  // Setup
   if (rank == 0) {
     printf("len mnk    = %d %d %d\n", len_m, len_n, len_k);
     printf("tile mnk   = %d %d %d\n", tile_m, tile_n, tile_k);

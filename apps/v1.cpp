@@ -9,6 +9,7 @@
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
 #include <hpx/mpi/mpi_future.hpp>
+#include <hpx/mpi/mpi_executor.hpp>
 
 #include <hpx/include/threads.hpp>
 #include <hpx/runtime/threads/executors/pool_executor.hpp>
@@ -20,7 +21,7 @@
 #include <vector>
 
 // make this a global var for now
-static hpx::threads::executors::pool_executor mpi_executor;
+static hpx::threads::executors::pool_executor mpi_pool_executor;
 
 // Local gemm
 //
@@ -79,10 +80,12 @@ void schedule_offload_and_send(
     tsgemm::c_dim const &cols_dim, std::vector<scalar> const &cini_buffer,
     std::vector<scalar> &send_buffer,
     std::vector<hpx::shared_future<void>> &gemm_futures,
-    std::vector<hpx::future<void>> &comm_futures) noexcept {
+    std::vector<hpx::future<void>> &comm_futures, int iter,int rank) noexcept {
   using tsgemm::accumulate;
   using tsgemm::index_map;
   using tsgemm::iterate_pieces;
+
+  hpx::mpi::executor mpi_executor(comm_cart);
 
   auto row_split_f = [&rows_dim](int split) {
     return rows_dim.next_split_offset(split);
@@ -111,7 +114,7 @@ void schedule_offload_and_send(
 
     // schedule offload
     auto offload_fut = gemm_futures[tidx].then(
-        mpi_executor,
+        mpi_pool_executor,
         hpx::util::annotated_function([=](auto &&/*gemm*/){
             accumulate<scalar, 0>(prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld);
         }, "offload")
@@ -126,9 +129,15 @@ void schedule_offload_and_send(
 
     // capture by value to avoid segfault due to lifetime issues
     auto mpi_launcher = [=](auto &&) {
-      return hpx::mpi::async(MPI_Isend, send_ptr, num_elems,
-                             tsgemm::get_mpi_type<scalar>(), dest_rank, tag,
-                             comm_cart);
+        hpx::mpi::debug(hpx::debug::str<>("MPI_Isend")
+            , hpx::mpi::detail::mpi_info_
+            , "I", hpx::debug::dec<3>(iter)
+            , "r", hpx::debug::dec<3>(dest_rank)
+            , "T", hpx::debug::dec<3>(tag)
+            , "E", hpx::debug::dec<3>(num_elems));
+//        printf("%d | send %d %d %d | %d\n", iter, rank, dest_rank, tag, num_elems);
+        return hpx::async(mpi_executor, MPI_Isend, send_ptr, num_elems,
+                             tsgemm::get_mpi_type<scalar>(), dest_rank, tag);
     };
     comm_futures.push_back(offload_fut.then(mpi_launcher));
     ++tag;
@@ -156,9 +165,12 @@ void schedule_recv_and_load(
     MPI_Comm comm_cart, tsgemm::c_dim const &rows_dim,
     tsgemm::c_dim const &cols_dim, std::vector<scalar> &cfin_buffer,
     std::vector<scalar> &recv_buffer,
-    std::vector<hpx::future<void>> &comm_futures) noexcept {
+    std::vector<hpx::future<void>> &comm_futures, int iter,int rank) noexcept {
   using tsgemm::index_map;
   using tsgemm::iterate_pieces;
+
+  hpx::mpi::executor mpi_executor(comm_cart);
+
   auto row_split_f = [&rows_dim](int split) {
     return rows_dim.next_slab_split_offset(split);
   };
@@ -181,9 +193,16 @@ void schedule_recv_and_load(
 
     recv_futures.clear();
     for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
-      auto mpi_fut = hpx::mpi::async(MPI_Irecv, recv_ptr + src_rank * num_elems,
+        hpx::mpi::debug(hpx::debug::str<>("MPI_Irecv")
+            , hpx::mpi::detail::mpi_info_
+            , "I", hpx::debug::dec<3>(iter)
+            , "r", hpx::debug::dec<3>(src_rank)
+            , "T", hpx::debug::dec<3>(tag)
+            , "E", hpx::debug::dec<3>(num_elems));
+//        printf("%d | recv %d %d %d | %d\n", iter, rank, src_rank, tag, num_elems);
+        auto mpi_fut = hpx::async(mpi_executor, MPI_Irecv, recv_ptr + src_rank * num_elems,
                                      num_elems, tsgemm::get_mpi_type<scalar>(),
-                                     src_rank, tag, comm_cart);
+                                     src_rank, tag);
       recv_futures.push_back(std::move(mpi_fut));
     }
 
@@ -223,22 +242,18 @@ void schedule_recv_and_load(
 //
 int hpx_main(hpx::program_options::variables_map &vm)
 {
-  // Tell the scheduler that we want to handle mpi in the background
-  // and use the provided hpx::mpi::poll function
-#ifdef TSGEMM_USE_MPI_POOL
-  // if we are using an MPI pool, enable polling on that
-  std::string pool_name = "mpi";
-#else
   // use default pool for polling
   std::string pool_name = "default";
+#ifdef TSGEMM_USE_MPI_POOL
+  // if we are using an MPI pool, enable polling on that
+  pool_name = "mpi";
 #endif
-  auto const &pool = hpx::resource::get_thread_pool(pool_name);
-  auto *sched = pool.get_scheduler();
-  sched->set_user_polling_function(&hpx::mpi::poll);
-  sched->add_scheduler_mode(hpx::threads::policies::enable_user_polling);
+
+  // this needs remain in scope for all uses of hpx::mpi
+  hpx::mpi::enable_user_polling enable_polling(pool_name);
 
   // an executor that can be used to place work on the MPI pool if it is enabled
-  mpi_executor = hpx::threads::executors::pool_executor(pool_name);
+  mpi_pool_executor = hpx::threads::executors::pool_executor(pool_name);
 
   using scalar_t = std::complex<double>;
   using clock_t = std::chrono::high_resolution_clock;
@@ -364,16 +379,21 @@ int hpx_main(hpx::program_options::variables_map &vm)
 
     auto t0_send = clock_t::now();
     schedule_offload_and_send(comm_cart, m_dim, n_dim, cini_buffer, send_buffer,
-                              gemm_futures, comm_futures);
+                              gemm_futures, comm_futures, i, rank);
     auto t1_send = clock_t::now();
 
     auto t0_recv = clock_t::now();
     schedule_recv_and_load(comm_cart, m_dim, n_dim, cfin_buffer, recv_buffer,
-                           comm_futures);
+                           comm_futures, i, rank);
     auto t1_recv = clock_t::now();
 
     auto t0_wait = clock_t::now();
-    hpx::wait_all(comm_futures);
+
+    hpx::mpi::debug(hpx::debug::str<>("Entering Wait")
+        , hpx::mpi::detail::mpi_info_);
+    auto fw = hpx::when_all(comm_futures).get();
+    hpx::mpi::debug(hpx::debug::str<>("Leaving  Wait")
+        , hpx::mpi::detail::mpi_info_);
     auto t1_wait = clock_t::now();
 
     auto t1_tot = clock_t::now();
@@ -389,9 +409,6 @@ int hpx_main(hpx::program_options::variables_map &vm)
     }
   }
 
-  // Before exiting, shut down the mpi/user polling loop.
-  sched->remove_scheduler_mode(hpx::threads::policies::enable_user_polling);
-
   // Simple check
   //std::stringstream ss;
   //using tsgemm::sum_global;
@@ -402,6 +419,9 @@ int hpx_main(hpx::program_options::variables_map &vm)
   //if (rank == 0)
   //  std::cout << ss.str() << '\n';
 
+  // make sure all ranks are ready befpre exiting
+  MPI_Barrier(MPI_COMM_WORLD);
+  // upon exit the mpi/user polling RAII object will stop polling
   return hpx::finalize();
 }
 

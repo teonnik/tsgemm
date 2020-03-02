@@ -268,15 +268,25 @@ int hpx_main(hpx::program_options::variables_map &vm) {
   using clock_t = std::chrono::high_resolution_clock;
   using seconds_t = std::chrono::duration<double>;
 
-#ifdef TSGEMM_USE_MPI_POOL
-  // use mpi pool
+  using hpx::threads::thread_priority_default;
+  using hpx::threads::thread_priority_high;
+  using hpx::threads::executors::pool_executor;
+
+  // 1. Use mpi pool executor
+  // 2. Use default pool with high priority executor
+  // 3. Use default pool with default priority executor
+#if defined(TSGEMM_USE_MPI_POOL)
   std::string pool_name = "mpi";
-#else
-  // use default pool for polling
+  auto priority = thread_priority_default;
+#elif defined(TSGEMM_USE_PRIORITIES)
   std::string pool_name = "default";
+  auto priority = thread_priority_high;
+#else
+  std::string pool_name = "default";
+  auto priority = thread_priority_default;
 #endif
   // an executor that can be used to place work on the MPI pool if it is enabled
-  auto mpi_executor = hpx::threads::executors::pool_executor(pool_name);
+  auto mpi_executor = pool_executor(pool_name, priority);
 
   // hpx::threads::thread_priority_high
 

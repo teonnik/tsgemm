@@ -14,3 +14,7 @@ target_link_libraries(v2 PRIVATE tsgemm)
 add_executable(v2_pool v2.cpp)
 target_link_libraries(v2_pool PRIVATE tsgemm)
 target_compile_definitions(v2_pool PRIVATE TSGEMM_USE_MPI_POOL)
+
+add_executable(v2_priority v2.cpp)
+target_link_libraries(v2_priority PRIVATE tsgemm)
+target_compile_definitions(v2_priority PRIVATE TSGEMM_USE_PRIORITIES)

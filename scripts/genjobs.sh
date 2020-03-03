@@ -14,7 +14,7 @@ len_k=523000
 tile_m=512
 tile_n=512
 tile_k=10000
-pgrid_rows=4
+pgrid_rows=5
 pgrid_cols=2
 blk_rows=512
 blk_cols=512
@@ -70,7 +70,8 @@ cat << JOB_EOF > job.sh
 #SBATCH --output=output.txt
 #SBATCH --error=error.txt
 
-source ${source_dir}/scripts/daint/env.sh
+device=daint
+source ${source_dir}/scripts/env.sh
 
 # MPI_THREAD_MULTIPLE for Cray
 export MPICH_MAX_THREAD_SAFETY=multiple
@@ -87,6 +88,7 @@ ldd ${exe_path} > libs.txt
 # run code
 srun ./cmd.sh
 JOB_EOF
+chmod +x job.sh
 
 # generate command file
 cat << CMD_EOF > cmd.sh
@@ -100,3 +102,4 @@ fi
 
 ${exe_path} ${params}
 CMD_EOF
+chmod +x cmd.sh

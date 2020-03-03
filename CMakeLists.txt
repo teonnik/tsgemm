@@ -12,4 +12,3 @@ set(CMAKE_CXX_STANDARD ${HPX_CXX_STANDARD})
 
 add_subdirectory(src/tsgemm)
 add_subdirectory(apps)
-add_subdirectory(scripts)

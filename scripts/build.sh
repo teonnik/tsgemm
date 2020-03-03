@@ -7,7 +7,7 @@ build_dir=$HOME/build/tsgemm
 # ----
 
 # dependencies
-source $src_dir/scripts/$device/env.sh
+source $src_dir/scripts/env.sh
 
 mkdir -p $build_dir
 cd $build_dir

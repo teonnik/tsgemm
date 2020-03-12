@@ -5,11 +5,11 @@
 #include <tsgemm/mpi_utils.hpp>
 #include <tsgemm/sum_global.hpp>
 
-#include <hpx/include/resource_partitioner.hpp>
 #include <hpx/dataflow.hpp>
 #include <hpx/hpx.hpp>
-#include <hpx/mpi/mpi_future.hpp>
+#include <hpx/include/resource_partitioner.hpp>
 #include <hpx/mpi/mpi_executor.hpp>
+#include <hpx/mpi/mpi_future.hpp>
 
 #include <hpx/include/threads.hpp>
 #include <hpx/runtime/threads/executors/pool_executor.hpp>
@@ -63,11 +63,11 @@ void schedule_local_gemm(tsgemm::seg_dim m_dim, tsgemm::seg_dim n_dim,
         scalar const *b_ptr = b_buffer.data() + b_offset;
 
         cini_fut = cini_fut.then(hpx::util::annotated_function(
-            [=](auto &&/*cini_fut*/){
-                tsgemm::gemm<scalar>(
-                    len_m, len_n, len_k, scalar(1), a_ptr, lda, b_ptr,
-                    ldb, scalar(1), c_ptr, ldc);
-            }, "gemm"));
+            [=](auto && /*cini_fut*/) {
+              tsgemm::gemm<scalar>(len_m, len_n, len_k, scalar(1), a_ptr, lda,
+                                   b_ptr, ldb, scalar(1), c_ptr, ldc);
+            },
+            "gemm"));
       }
       cini_futures.push_back(std::move(cini_fut));
     }
@@ -80,7 +80,7 @@ void schedule_offload_and_send(
     tsgemm::c_dim const &cols_dim, std::vector<scalar> const &cini_buffer,
     std::vector<scalar> &send_buffer,
     std::vector<hpx::shared_future<void>> &gemm_futures,
-    std::vector<hpx::future<void>> &comm_futures, int iter,int rank) noexcept {
+    std::vector<hpx::future<void>> &comm_futures, int iter, int rank) noexcept {
   using tsgemm::accumulate;
   using tsgemm::index_map;
   using tsgemm::iterate_pieces;
@@ -114,11 +114,13 @@ void schedule_offload_and_send(
 
     // schedule offload
     auto offload_fut = gemm_futures[tidx].then(
-        mpi_pool_executor,
-        hpx::util::annotated_function([=](auto &&/*gemm*/){
-            accumulate<scalar, 0>(prlen, pclen, cini_ptr, cini_ld, send_ptr, send_ld);
-        }, "offload")
-    );
+        mpi_pool_executor, hpx::util::annotated_function(
+                               [=](auto && /*gemm*/) {
+                                 accumulate<scalar, 0>(prlen, pclen, cini_ptr,
+                                                       cini_ld, send_ptr,
+                                                       send_ld);
+                               },
+                               "offload"));
 
     // schedule send
     int num_elems = prlen * pclen;
@@ -129,15 +131,14 @@ void schedule_offload_and_send(
 
     // capture by value to avoid segfault due to lifetime issues
     auto mpi_launcher = [=](auto &&) {
-        hpx::mpi::debug(hpx::debug::str<>("MPI_Isend")
-            , hpx::mpi::detail::mpi_info_
-            , "I", hpx::debug::dec<3>(iter)
-            , "r", hpx::debug::dec<3>(dest_rank)
-            , "T", hpx::debug::dec<3>(tag)
-            , "E", hpx::debug::dec<3>(num_elems));
-//        printf("%d | send %d %d %d | %d\n", iter, rank, dest_rank, tag, num_elems);
-        return hpx::async(mpi_executor, MPI_Isend, send_ptr, num_elems,
-                             tsgemm::get_mpi_type<scalar>(), dest_rank, tag);
+      hpx::mpi::debug(
+          hpx::debug::str<>("MPI_Isend"), hpx::mpi::detail::mpi_info_, "I",
+          hpx::debug::dec<3>(iter), "r", hpx::debug::dec<3>(dest_rank), "T",
+          hpx::debug::dec<3>(tag), "E", hpx::debug::dec<3>(num_elems));
+      //        printf("%d | send %d %d %d | %d\n", iter, rank, dest_rank, tag,
+      //        num_elems);
+      return hpx::async(mpi_executor, MPI_Isend, send_ptr, num_elems,
+                        tsgemm::get_mpi_type<scalar>(), dest_rank, tag);
     };
     comm_futures.push_back(offload_fut.then(mpi_launcher));
     ++tag;
@@ -161,11 +162,12 @@ void schedule_blk_load(int num_procs, scalar const *recv_ptr, int prlen,
 }
 
 template <typename scalar>
-void schedule_recv_and_load(
-    MPI_Comm comm_cart, tsgemm::c_dim const &rows_dim,
-    tsgemm::c_dim const &cols_dim, std::vector<scalar> &cfin_buffer,
-    std::vector<scalar> &recv_buffer,
-    std::vector<hpx::future<void>> &comm_futures, int iter,int rank) noexcept {
+void schedule_recv_and_load(MPI_Comm comm_cart, tsgemm::c_dim const &rows_dim,
+                            tsgemm::c_dim const &cols_dim,
+                            std::vector<scalar> &cfin_buffer,
+                            std::vector<scalar> &recv_buffer,
+                            std::vector<hpx::future<void>> &comm_futures,
+                            int iter, int rank) noexcept {
   using tsgemm::index_map;
   using tsgemm::iterate_pieces;
 
@@ -193,25 +195,26 @@ void schedule_recv_and_load(
 
     recv_futures.clear();
     for (int src_rank = 0; src_rank < num_procs; ++src_rank) {
-        hpx::mpi::debug(hpx::debug::str<>("MPI_Irecv")
-            , hpx::mpi::detail::mpi_info_
-            , "I", hpx::debug::dec<3>(iter)
-            , "r", hpx::debug::dec<3>(src_rank)
-            , "T", hpx::debug::dec<3>(tag)
-            , "E", hpx::debug::dec<3>(num_elems));
-//        printf("%d | recv %d %d %d | %d\n", iter, rank, src_rank, tag, num_elems);
-        auto mpi_fut = hpx::async(mpi_executor, MPI_Irecv, recv_ptr + src_rank * num_elems,
-                                     num_elems, tsgemm::get_mpi_type<scalar>(),
-                                     src_rank, tag);
+      hpx::mpi::debug(
+          hpx::debug::str<>("MPI_Irecv"), hpx::mpi::detail::mpi_info_, "I",
+          hpx::debug::dec<3>(iter), "r", hpx::debug::dec<3>(src_rank), "T",
+          hpx::debug::dec<3>(tag), "E", hpx::debug::dec<3>(num_elems));
+      //        printf("%d | recv %d %d %d | %d\n", iter, rank, src_rank, tag,
+      //        num_elems);
+      auto mpi_fut =
+          hpx::async(mpi_executor, MPI_Irecv, recv_ptr + src_rank * num_elems,
+                     num_elems, tsgemm::get_mpi_type<scalar>(), src_rank, tag);
       recv_futures.push_back(std::move(mpi_fut));
     }
 
-    auto load_fut = hpx::dataflow(
-        hpx::util::annotated_function(
-            [=](auto && /*fs*/){
-                    schedule_blk_load<scalar>(num_procs,
-                        recv_ptr, prlen, pclen, recv_ld, cfin_ptr, cfin_ld);
-                }, "blk_load"), recv_futures);
+    auto load_fut = hpx::dataflow(hpx::util::annotated_function(
+                                      [=](auto && /*fs*/) {
+                                        schedule_blk_load<scalar>(
+                                            num_procs, recv_ptr, prlen, pclen,
+                                            recv_ld, cfin_ptr, cfin_ld);
+                                      },
+                                      "blk_load"),
+                                  recv_futures);
 
     comm_futures.push_back(std::move(load_fut));
 
@@ -240,8 +243,7 @@ void schedule_recv_and_load(
 //
 // All matrices are distributed in column-major order.
 //
-int hpx_main(hpx::program_options::variables_map &vm)
-{
+int hpx_main(hpx::program_options::variables_map &vm) {
   // use default pool for polling
   std::string pool_name = "default";
 #ifdef TSGEMM_USE_MPI_POOL
@@ -329,7 +331,9 @@ int hpx_main(hpx::program_options::variables_map &vm)
   int num_tiles = m_dim.tile_dim().num_seg() * n_dim.tile_dim().num_seg();
   int seg_m = std::min(tile_m, blk_rows);
   int seg_n = std::min(tile_n, blk_cols);
-  int num_pieces = (len_m + seg_m - 1) * (len_n + seg_n - 1) / (seg_m * seg_n);
+  int num_seg_m = (len_m + seg_m - 1) / seg_m;
+  int num_seg_n = (len_n + seg_n - 1) / seg_n;
+  int num_pieces = num_seg_m * num_seg_n;
   std::vector<hpx::shared_future<void>> gemm_futures;
   std::vector<hpx::future<void>> comm_futures;
   gemm_futures.reserve(num_tiles);
@@ -341,7 +345,7 @@ int hpx_main(hpx::program_options::variables_map &vm)
   // TODO: schedule the gemms associated with the columns first
   //  int m_numcols = (len_m + seg_m - 1) / seg_m;
   //  int num_comm_cols = (max_comms + m_numcols - 1) / m_numcols;
-  if (num_pieces > max_comms) {
+  if (rank == 0 && num_pieces > max_comms) {
     printf("[WARNING] There are too many pieces! Increase the block size, tile "
            "size or both!");
   }
@@ -389,11 +393,11 @@ int hpx_main(hpx::program_options::variables_map &vm)
 
     auto t0_wait = clock_t::now();
 
-    hpx::mpi::debug(hpx::debug::str<>("Entering Wait")
-        , hpx::mpi::detail::mpi_info_);
+    hpx::mpi::debug(hpx::debug::str<>("Entering Wait"),
+                    hpx::mpi::detail::mpi_info_);
     auto fw = hpx::when_all(comm_futures).get();
-    hpx::mpi::debug(hpx::debug::str<>("Leaving  Wait")
-        , hpx::mpi::detail::mpi_info_);
+    hpx::mpi::debug(hpx::debug::str<>("Leaving  Wait"),
+                    hpx::mpi::detail::mpi_info_);
     auto t1_wait = clock_t::now();
 
     auto t1_tot = clock_t::now();
@@ -410,13 +414,13 @@ int hpx_main(hpx::program_options::variables_map &vm)
   }
 
   // Simple check
-  //std::stringstream ss;
-  //using tsgemm::sum_global;
-  //ss << "cini sum = " << sum_global(comm_cart, cini_buffer) << '\n';
-  //ss << "send sum = " << sum_global(comm_cart, send_buffer) << '\n';
-  //ss << "recv sum = " << sum_global(comm_cart, recv_buffer) << '\n';
-  //ss << "cfin sum = " << sum_global(comm_cart, cfin_buffer) << '\n';
-  //if (rank == 0)
+  // std::stringstream ss;
+  // using tsgemm::sum_global;
+  // ss << "cini sum = " << sum_global(comm_cart, cini_buffer) << '\n';
+  // ss << "send sum = " << sum_global(comm_cart, send_buffer) << '\n';
+  // ss << "recv sum = " << sum_global(comm_cart, recv_buffer) << '\n';
+  // ss << "cfin sum = " << sum_global(comm_cart, cfin_buffer) << '\n';
+  // if (rank == 0)
   //  std::cout << ss.str() << '\n';
 
   // make sure all ranks are ready befpre exiting
@@ -432,32 +436,31 @@ int hpx_main(hpx::program_options::variables_map &vm)
 //                       --pgrid_rows   1  --pgrid_cols   1
 //                       --blk_rows    32  --blk_cols    32
 //
-int main(int argc, char **argv)
-{
-    // NB.
-    // thread pools must be declared before starting the runtime
+int main(int argc, char **argv) {
+  // NB.
+  // thread pools must be declared before starting the runtime
 
-    // initialize MPI
-    auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
+  // initialize MPI
+  auto mpi_handler = tsgemm::mpi_init{argc, argv, MPI_THREAD_MULTIPLE};
 
-    // declare options before creating resource partitioner
-    hpx::program_options::options_description desc_cmdline = tsgemm::init_desc();
+  // declare options before creating resource partitioner
+  hpx::program_options::options_description desc_cmdline = tsgemm::init_desc();
 
 #ifdef TSGEMM_USE_MPI_POOL
-    // Create resource partitioner
-    hpx::resource::partitioner rp(desc_cmdline, argc, argv);
+  // Create resource partitioner
+  hpx::resource::partitioner rp(desc_cmdline, argc, argv);
 
-    // create a thread pool that is not "default" that we will use for MPI work
-    rp.create_thread_pool("mpi");
+  // create a thread pool that is not "default" that we will use for MPI work
+  rp.create_thread_pool("mpi");
 
-    // add (enabled) PUs on the first core to it
-    rp.add_resource(rp.numa_domains()[0].cores()[0].pus(), "mpi");
-    std::cout << "mpi pool created : TSGEMM_USE_MPI_POOL" << std::endl;
+  // add (enabled) PUs on the first core to it
+  rp.add_resource(rp.numa_domains()[0].cores()[0].pus(), "mpi");
+  std::cout << "mpi pool created : TSGEMM_USE_MPI_POOL" << std::endl;
 #endif
 
-    // flush printf
-    setbuf(stdout, NULL);
+  // flush printf
+  setbuf(stdout, NULL);
 
-    // start the HPX runtime
-    return hpx::init(desc_cmdline, argc, argv);
+  // start the HPX runtime
+  return hpx::init(desc_cmdline, argc, argv);
 }

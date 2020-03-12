@@ -359,7 +359,9 @@ int hpx_main(hpx::program_options::variables_map &vm) {
   int num_tiles = m_dim.tile_dim().num_seg() * n_dim.tile_dim().num_seg();
   int seg_m = std::min(tile_m, blk_rows);
   int seg_n = std::min(tile_n, blk_cols);
-  int num_pieces = (len_m + seg_m - 1) * (len_n + seg_n - 1) / (seg_m * seg_n);
+  int num_seg_m = (len_m + seg_m - 1) / seg_m;
+  int num_seg_n = (len_n + seg_n - 1) / seg_n;
+  int num_pieces = num_seg_m * num_seg_n;
   std::vector<hpx::shared_future<void>> gemm_futures;
   std::vector<hpx::future<void>> comm_futures;
   gemm_futures.reserve(num_tiles);
@@ -374,7 +376,7 @@ int hpx_main(hpx::program_options::variables_map &vm) {
   // TODO: schedule the gemms associated with the columns first
   //  int m_numcols = (len_m + seg_m - 1) / seg_m;
   //  int num_comm_cols = (max_comms + m_numcols - 1) / m_numcols;
-  if (num_pieces > max_comms) {
+  if (rank == 0 && num_pieces > max_comms) {
     printf("[WARNING] There are too many pieces! Increase the block size, tile "
            "size or both!");
   }
